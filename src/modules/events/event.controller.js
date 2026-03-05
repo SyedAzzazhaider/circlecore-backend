@@ -5,9 +5,9 @@ class EventController {
 
   async create(req, res, next) {
     try {
-      const { communityId, title, description, type, startDate, endDate, timezone, location, maxAttendees, tags } = req.body;
+      const { communityId, title, details, type, startDate, endDate, timezone, location, maxAttendees, tags } = req.body;
       const event = await eventService.createEvent({
-        communityId, title, description, type,
+        communityId, title, details, type,
         startDate, endDate, timezone, location,
         maxAttendees, tags,
         createdBy: req.user._id,

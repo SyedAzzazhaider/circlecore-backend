@@ -116,5 +116,24 @@ class AuthService{
     const invite=await InviteCode.create({createdBy:userId,communityId,maxUses});
     return invite;
   }
+
+  /**
+   * POST /invites/redeem
+   * Document Section 9 API Contract — standalone invite code validation.
+   * Validates an invite code and returns its details WITHOUT consuming it.
+   * Consumption happens only at registration (register method).
+   * This endpoint lets the frontend verify a code is valid before showing the signup form.
+   */
+  async redeemInviteCode(code){
+    if(!code)throw Object.assign(new Error("Invite code is required"),{statusCode:400});
+    const invite=await this.validateInviteCode(code);
+    return{
+      message:"Invite code is valid.",
+      valid:true,
+      communityId:invite.communityId||null,
+      expiresAt:invite.expiresAt,
+      usesRemaining:invite.maxUses-invite.useCount,
+    };
+  }
 }
 module.exports=new AuthService();

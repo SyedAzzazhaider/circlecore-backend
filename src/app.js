@@ -4,16 +4,17 @@ const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const morgan = require('morgan');
-const passport = require('./config/passport');          // OAuth strategies  ← NEW
+const passport = require('./config/passport');
+const { geoBlocklist } = require('./middleware/geoBlocklist');
 const { globalLimiter } = require('./middleware/rateLimiter');
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
 const { authenticate } = require('./middleware/authenticate');
 const { checkSessionTimeout } = require('./middleware/sessionTimeout');
 
-// Route imports
+// Route imports — Modules 1-4
 const authRoutes = require('./modules/auth/auth.routes');
-const oauthRoutes = require('./modules/auth/oauth.routes');  // OAuth routes  ← NEW
+const oauthRoutes = require('./modules/auth/oauth.routes');
 const profileRoutes = require('./modules/users/profile.routes');
 const communityRoutes = require('./modules/communities/community.routes');
 const postRoutes = require('./modules/posts/post.routes');
@@ -24,6 +25,9 @@ const searchRoutes = require('./modules/search/search.routes');
 const channelRoutes = require('./modules/communities/channel.routes');
 const announcementRoutes = require('./modules/admin/announcement.routes');
 const gdprRoutes = require('./modules/users/gdpr.routes');
+
+// Route imports — Module 5: Tiered Membership & Billing
+const billingRoutes = require('./modules/billing/billing.routes');
 
 const app = express();
 
@@ -38,14 +42,26 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+// ─── GEO / IP BLOCKLIST ───────────────────────────────────────────────────────
+// Must run BEFORE body parsers so blocked requests are rejected immediately.
+app.set('trust proxy', 1);
+app.use(geoBlocklist);
+
 // ─── BODY PARSERS ─────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+// IMPORTANT: Stripe webhook requires raw body for signature verification.
+// express.json() is skipped for /api/billing/webhook/stripe — express.raw()
+// is applied directly on that route inside billing.routes.js instead.
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/billing/webhook/stripe') {
+    next();
+  } else {
+    express.json({ limit: '10mb' })(req, res, next);
+  }
+});
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // ─── PASSPORT (OAuth) ─────────────────────────────────────────────────────────
-// Stateless — no session middleware needed. Passport is used only to handle
-// the OAuth protocol exchange (token trade + profile fetch).
 app.use(passport.initialize());
 
 // ─── HTTP LOGGING ─────────────────────────────────────────────────────────────
@@ -65,38 +81,44 @@ app.get('/health', (req, res) => res.status(200).json({
   timestamp: new Date().toISOString(),
 }));
 
-// ─── API ROUTES ───────────────────────────────────────────────────────────────
+// ─── ROUTE PROTECTION STACK ───────────────────────────────────────────────────
+// Used ONLY for routers where EVERY endpoint requires authentication.
+// authenticate runs first → req.user is populated
+// checkSessionTimeout runs second → timeout is enforced with req.user present
 //
-// BUG 2 FIX — CRITICAL:
-// Previously: app.use('/api', checkSessionTimeout) was placed BEFORE all routes.
-// At that point req.user is always undefined (authenticate hasn't run yet),
-// so checkSessionTimeout silently skipped every request — it was completely non-functional.
-//
-// Fix strategy:
-// A shared middleware stack [authenticate, checkSessionTimeout] is defined once
-// and applied to every protected route group. This guarantees:
-//   1. authenticate runs first → req.user is populated
-//   2. checkSessionTimeout runs second → req.user is present → timeout is enforced
-//   3. auth routes remain fully public (no authenticate applied)
-//   4. Zero double-authentication — each request hits authenticate exactly once
-//
-const protected = [authenticate, checkSessionTimeout];
+// DO NOT apply to routers that have a MIX of public and protected endpoints.
+// Those routers manage their own per-route authenticate calls internally.
+const protectedMiddleware = [authenticate, checkSessionTimeout];
 
-// Public — no session enforcement
+// ─── PUBLIC + MIXED ROUTES ────────────────────────────────────────────────────
+// No global auth applied — each router manages its own per-route auth.
+
+// Auth routes — entirely public (login, register, etc.)
 app.use('/api/auth', authRoutes);
-app.use('/api/auth/oauth', oauthRoutes);  // OAuth — Google, Apple, LinkedIn
+app.use('/api/auth/oauth', oauthRoutes);
+app.use('/api/invites', authRoutes);
 
-// Protected — authenticate THEN checkSessionTimeout on every request
-app.use('/api/profiles',      ...protected, profileRoutes);
-app.use('/api/communities',   ...protected, communityRoutes);
-app.use('/api/posts',         ...protected, postRoutes);
-app.use('/api/comments',      ...protected, commentRoutes);
-app.use('/api/notifications', ...protected, notificationRoutes);
-app.use('/api/events',        ...protected, eventRoutes);
-app.use('/api/search',        ...protected, searchRoutes);
-app.use('/api/channels',      ...protected, channelRoutes);
-app.use('/api/announcements', ...protected, announcementRoutes);
-app.use('/api/gdpr',          ...protected, gdprRoutes);
+// Communities — MIXED: GET / and GET /:slug are public, rest require auth.
+// The community.routes.js file applies authenticate per-route correctly.
+// Applying protectedMiddleware here would block the public GET endpoints → 401.
+app.use('/api/communities', communityRoutes);
+
+// Billing — MIXED: GET /plans and webhooks are public, rest require auth.
+// The billing.routes.js file applies authenticate per-route correctly.
+app.use('/api/billing', billingRoutes);
+
+// ─── FULLY PROTECTED ROUTES ───────────────────────────────────────────────────
+// Every single endpoint in these routers requires a valid JWT.
+// Safe to apply protectedMiddleware globally at this level.
+app.use('/api/profiles',      ...protectedMiddleware, profileRoutes);
+app.use('/api/posts',         ...protectedMiddleware, postRoutes);
+app.use('/api/comments',      ...protectedMiddleware, commentRoutes);
+app.use('/api/notifications', ...protectedMiddleware, notificationRoutes);
+app.use('/api/events',        ...protectedMiddleware, eventRoutes);
+app.use('/api/search',        ...protectedMiddleware, searchRoutes);
+app.use('/api/channels',      ...protectedMiddleware, channelRoutes);
+app.use('/api/announcements', ...protectedMiddleware, announcementRoutes);
+app.use('/api/gdpr',          ...protectedMiddleware, gdprRoutes);
 
 // ─── 404 HANDLER ──────────────────────────────────────────────────────────────
 app.use(function (req, res) {

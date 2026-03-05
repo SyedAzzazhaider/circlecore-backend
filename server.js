@@ -2,7 +2,8 @@ require('dotenv').config();
 const http = require('http');
 const app = require('./src/app');
 const connectDB = require('./src/config/db');
-const { connectRedis } = require('./src/config/redis');
+const { connectRedis, getRedis } = require('./src/config/redis');
+const blocklistConfig = require('./src/config/blocklist'); // Geo/blocklist Redis injection
 const { initializeSocket } = require('./src/config/socket');
 const { initializePubSub } = require('./src/config/pubsub');
 const logger = require('./src/utils/logger');
@@ -16,6 +17,10 @@ const startServer = async () => {
 
     // Connect Redis (optional — won't crash if unavailable)
     connectRedis();
+
+    // Inject Redis into blocklist config for dynamic IP/country management
+    const redisClient = getRedis();
+    if (redisClient) blocklistConfig.setRedis(redisClient);
 
     // Create HTTP server
     const httpServer = http.createServer(app);

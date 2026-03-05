@@ -9,6 +9,19 @@ class AuthController{
   async forgotPassword(req,res,next){try{const{email}=req.body;const result=await authService.forgotPassword(email);return ApiResponse.success(res,{},result.message);}catch(error){next(error);}}
   async resetPassword(req,res,next){try{const{token}=req.params;const{password}=req.body;const result=await authService.resetPassword(token,password);return ApiResponse.success(res,{},result.message);}catch(error){next(error);}}
   async generateInviteCode(req,res,next){try{const{communityId,maxUses}=req.body;const invite=await authService.generateInviteCode(req.user._id,{communityId,maxUses});return ApiResponse.created(res,{invite},'Invite code generated');}catch(error){next(error);}}
+
+  /**
+   * POST /api/invites/redeem
+   * Document Section 9 API Contract
+   * Validates invite code and returns its status — does not consume it.
+   */
+  async redeemInviteCode(req,res,next){
+    try{
+      const{code}=req.body;
+      const result=await authService.redeemInviteCode(code);
+      return ApiResponse.success(res,result,result.message);
+    }catch(error){next(error);}
+  }
   async getMe(req,res,next){try{return ApiResponse.success(res,{user:req.user},'User fetched');}catch(error){next(error);}}
 }
 module.exports=new AuthController();

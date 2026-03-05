@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { authenticator } = require('otplib');
+const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 const bcrypt = require('bcryptjs');
 const User = require('./auth.model');
@@ -30,13 +30,6 @@ const logger = require('../../utils/logger');
  *   - Returned in plaintext ONCE at enable time — never retrievable again
  */
 
-// otplib configuration — industry standard settings
-authenticator.options = {
-  window: 1,      // Accept 1 step tolerance (±30s) to handle clock drift
-  step: 30,       // 30-second TOTP window (RFC 6238 standard)
-  digits: 6,      // 6-digit codes
-};
-
 const APP_NAME = 'CircleCore';
 const BACKUP_CODE_COUNT = 8;
 const BACKUP_CODE_LENGTH = 10;
@@ -62,22 +55,22 @@ class TwoFactorService {
     }
 
     // Generate a cryptographically secure TOTP secret
-    const secret = authenticator.generateSecret(32); // 32 bytes → 52-char base32 string
-
-    // Build the otpauth URI — this is what authenticator apps scan
-    const otpauthUri = authenticator.keyuri(user.email, APP_NAME, secret);
+    const secretObj = speakeasy.generateSecret({
+      length: 32,
+      name: APP_NAME + ':' + user.email,
+    });
 
     // Generate QR code as a base64 data URL — returned to frontend for display
-    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUri);
+    const qrCodeDataUrl = await QRCode.toDataURL(secretObj.otpauth_url);
 
-    // Persist secret (not yet active — twoFactorEnabled stays false)
-    await User.findByIdAndUpdate(userId, { twoFactorSecret: secret });
+    // Persist secret in base32 format (not yet active — twoFactorEnabled stays false)
+    await User.findByIdAndUpdate(userId, { twoFactorSecret: secretObj.base32 });
 
-    logger.info(`2FA setup initiated for user: ${user.email}`);
+    logger.info('2FA setup initiated for user: ' + user.email);
 
     return {
-      secret,        // For users who prefer manual entry in their authenticator app
-      qrCode: qrCodeDataUrl,  // Base64 PNG — frontend renders as <img src="...">
+      secret: secretObj.base32,   // For users who prefer manual entry in their authenticator app
+      qrCode: qrCodeDataUrl,      // Base64 PNG — frontend renders as <img src="...">
       message: 'Scan the QR code with your authenticator app, then call the enable endpoint with your first code to activate.',
     };
   }
@@ -108,9 +101,11 @@ class TwoFactorService {
     }
 
     // Verify the TOTP code against the stored secret
-    const isValid = authenticator.verify({
-      token: totpCode.toString().trim(),
+    const isValid = speakeasy.totp.verify({
       secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: totpCode.toString().trim(),
+      window: 1,  // Accept ±30s clock drift
     });
 
     if (!isValid) {
@@ -134,11 +129,11 @@ class TwoFactorService {
       twoFactorBackupCodes: hashedCodes,
     });
 
-    logger.info(`2FA successfully enabled for user: ${user.email}`);
+    logger.info('2FA successfully enabled for user: ' + user.email);
 
     return {
       message: 'Two-factor authentication has been enabled.',
-      backupCodes: plaintextCodes, // ⚠️ Shown ONCE — user must save these immediately
+      backupCodes: plaintextCodes, // Shown ONCE — user must save these immediately
       warning: 'Save these backup codes in a secure location. They will not be shown again. Each code can only be used once.',
     };
   }
@@ -182,14 +177,16 @@ class TwoFactorService {
 
     const codeStr = totpCode.toString().trim();
 
-    // ── Try TOTP code first ────────────────────────────────────────────────────
-    const isTotpValid = authenticator.verify({
-      token: codeStr,
+    // Try TOTP code first
+    const isTotpValid = speakeasy.totp.verify({
       secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: codeStr,
+      window: 1,
     });
 
     if (!isTotpValid) {
-      // ── Try backup codes ───────────────────────────────────────────────────
+      // Try backup codes
       const backupCodeUsed = await this._consumeBackupCode(user, codeStr);
 
       if (!backupCodeUsed) {
@@ -198,10 +195,10 @@ class TwoFactorService {
           { statusCode: 401 }
         );
       }
-      logger.info(`Backup code used for 2FA login — user: ${user.email}`);
+      logger.info('Backup code used for 2FA login — user: ' + user.email);
     }
 
-    // ── Issue full token pair (mirrors standard login) ─────────────────────────
+    // Issue full token pair (mirrors standard login)
     const payload = { userId: user._id, role: user.role, email: user.email };
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
@@ -215,7 +212,7 @@ class TwoFactorService {
       lastLogin: new Date(),
     });
 
-    logger.info(`2FA login successful for user: ${user.email}`);
+    logger.info('2FA login successful for user: ' + user.email);
 
     return {
       accessToken,
@@ -251,23 +248,19 @@ class TwoFactorService {
     // Verify password
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      throw Object.assign(
-        new Error('Incorrect password.'),
-        { statusCode: 401 }
-      );
+      throw Object.assign(new Error('Incorrect password.'), { statusCode: 401 });
     }
 
     // Verify TOTP code
-    const isTotpValid = authenticator.verify({
-      token: totpCode.toString().trim(),
+    const isTotpValid = speakeasy.totp.verify({
       secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: totpCode.toString().trim(),
+      window: 1,
     });
 
     if (!isTotpValid) {
-      throw Object.assign(
-        new Error('Invalid verification code.'),
-        { statusCode: 401 }
-      );
+      throw Object.assign(new Error('Invalid verification code.'), { statusCode: 401 });
     }
 
     // Clear all 2FA data
@@ -277,7 +270,7 @@ class TwoFactorService {
       twoFactorBackupCodes: [],
     });
 
-    logger.info(`2FA disabled for user: ${user.email}`);
+    logger.info('2FA disabled for user: ' + user.email);
 
     return { message: 'Two-factor authentication has been disabled.' };
   }
@@ -288,10 +281,10 @@ class TwoFactorService {
 
   /**
    * Generate N plaintext backup codes.
-   * Format: XXXX-XXXXX (10 uppercase alphanumeric characters, hyphenated for readability)
+   * Format: XXXXX-XXXXX (10 uppercase alphanumeric characters, hyphenated for readability)
    */
   _generateBackupCodes() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Remove O,0,I,1 — visually ambiguous
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excludes O,0,I,1 — visually ambiguous
     const codes = [];
 
     for (let i = 0; i < BACKUP_CODE_COUNT; i++) {
@@ -300,7 +293,6 @@ class TwoFactorService {
       for (let j = 0; j < BACKUP_CODE_LENGTH; j++) {
         code += chars[bytes[j] % chars.length];
       }
-      // Format as XXXXX-XXXXX for readability
       codes.push(code.slice(0, 5) + '-' + code.slice(5));
     }
 
@@ -311,7 +303,6 @@ class TwoFactorService {
    * Check a submitted code against all stored backup code hashes.
    * If found: remove it from the array (single-use), save, return true.
    * If not found: return false.
-   *
    * Normalise input: strip hyphens and uppercase before comparing.
    */
   async _consumeBackupCode(user, rawCode) {
@@ -320,7 +311,6 @@ class TwoFactorService {
     for (let i = 0; i < user.twoFactorBackupCodes.length; i++) {
       const match = await bcrypt.compare(normalised, user.twoFactorBackupCodes[i]);
       if (match) {
-        // Remove this code so it cannot be reused
         user.twoFactorBackupCodes.splice(i, 1);
         await User.findByIdAndUpdate(user._id, {
           twoFactorBackupCodes: user.twoFactorBackupCodes,

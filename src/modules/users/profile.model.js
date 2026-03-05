@@ -13,8 +13,8 @@ const profileSchema = new mongoose.Schema({
   // Document requirement: reputation signal
   reputation: { type: Number, default: 0 },
 
-  // Document requirement: member tier
-  tier: { type: String, enum: ['standard', 'premium', 'enterprise'], default: 'standard' },
+  // Document requirement: member tier (standard / premium / mod)
+  tier: { type: String, enum: ['standard', 'premium', 'mod'], default: 'standard' },
 
   // Document requirement: moderator badges
   badges: [{

@@ -4,8 +4,8 @@ const authController = require('./auth.controller');
 const { authenticate } = require('../../middleware/authenticate');
 const validate = require('../../middleware/validate');
 const { verifyRecaptcha } = require('../../middleware/recaptcha');
-const { authLimiter } = require('../../middleware/rateLimiter'); // BUG 1 FIX — re-added missing import
-const twoFactorRoutes = require('./twoFactor.routes');           // 2FA sub-router
+const { authLimiter } = require('../../middleware/rateLimiter');
+const twoFactorRoutes = require('./twoFactor.routes');
 const {
   registerValidator,
   loginValidator,
@@ -18,17 +18,23 @@ const {
  * Document: Authentication & Access
  *
  * Security notes:
- * - reCAPTCHA applied to register and login (public entry points)
- * - authLimiter applied to all sensitive public endpoints:
- *     forgot-password  → brute-force / enumeration attack surface
- *     reset-password   → token replay / brute-force surface
- *     refresh-token    → token cycling abuse surface
- * - authLimiter was removed during reCAPTCHA update — now restored (BUG 1)
+ * - reCAPTCHA applied to register/signup and login
+ * - authLimiter on forgot-password, reset-password, refresh-token (BUG 1 FIX)
  */
 
 // ─── PUBLIC ROUTES ────────────────────────────────────────────────────────────
 
-// Registration & login — reCAPTCHA + rate limited
+// Registration — Document Section 9 API Contract: POST /auth/signup
+// /register alias added for backward compatibility with existing tests and clients.
+// Both routes point to the identical handler and middleware stack.
+router.post(
+  '/signup',
+  verifyRecaptcha,
+  registerValidator,
+  validate,
+  authController.register
+);
+
 router.post(
   '/register',
   verifyRecaptcha,
@@ -48,7 +54,7 @@ router.post(
 // Email verification — no limiter needed (token is single-use, time-limited)
 router.get('/verify-email/:token', authController.verifyEmail);
 
-// Password reset — CRITICAL: authLimiter restored (BUG 1 FIX)
+// Password reset — authLimiter applied (BUG 1 FIX — was missing)
 router.post(
   '/forgot-password',
   authLimiter,
@@ -65,7 +71,7 @@ router.post(
   authController.resetPassword
 );
 
-// Token refresh — authLimiter restored (BUG 1 FIX)
+// Token refresh — authLimiter applied (BUG 1 FIX — was missing)
 router.post(
   '/refresh-token',
   authLimiter,
@@ -77,6 +83,11 @@ router.post(
 router.post('/logout', authenticate, authController.logout);
 router.get('/me', authenticate, authController.getMe);
 router.post('/invite-code', authenticate, authController.generateInviteCode);
+
+// ─── INVITE REDEEM ────────────────────────────────────────────────────────────
+// Document Section 9 API Contract: POST /invites/redeem
+// Public — rate-limited to prevent invite code enumeration.
+router.post('/invites/redeem', authLimiter, authController.redeemInviteCode);
 
 // ─── TWO-FACTOR AUTHENTICATION ────────────────────────────────────────────────
 // All 2FA routes live at /api/auth/2fa/*

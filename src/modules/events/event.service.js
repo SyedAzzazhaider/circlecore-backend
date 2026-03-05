@@ -4,7 +4,7 @@ const logger = require('../../utils/logger');
 
 class EventService {
 
-  async createEvent({ communityId, createdBy, title, description, type, startDate, endDate, timezone, location, maxAttendees, tags }) {
+  async createEvent({ communityId, createdBy, title, details, type, startDate, endDate, timezone, location, maxAttendees, tags }) {
     const community = await Community.findById(communityId);
     if (!community) throw Object.assign(new Error('Community not found'), { statusCode: 404 });
 
@@ -20,7 +20,7 @@ class EventService {
       communityId,
       createdBy,
       title,
-      description,
+      details,
       type: type || 'online',
       startDate,
       endDate,

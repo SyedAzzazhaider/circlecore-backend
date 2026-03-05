@@ -17,7 +17,8 @@ const eventSchema = new mongoose.Schema({
     trim: true,
     maxlength: [200, 'Title cannot exceed 200 characters'],
   },
-  description: {
+  // Document Section 8 schema field: 'details'
+  details: {
     type: String,
     required: [true, 'Description is required'],
     maxlength: [5000, 'Description cannot exceed 5000 characters'],
