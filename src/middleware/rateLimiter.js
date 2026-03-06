@@ -32,4 +32,22 @@ const billingLimiter = rateLimit({
   message: { success: false, message: 'Too many billing requests, please try again later' },
 });
 
-module.exports = { globalLimiter, authLimiter, postLimiter, billingLimiter };
+
+
+const moderationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { success: false, message: 'Too many moderation actions, slow down' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const flagLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Too many flags submitted, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+module.exports = { globalLimiter, authLimiter, postLimiter, billingLimiter, moderationLimiter, flagLimiter };

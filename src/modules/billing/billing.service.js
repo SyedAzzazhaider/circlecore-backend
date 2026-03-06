@@ -15,14 +15,13 @@ const logger = require('../../utils/logger');
  */
 class BillingService {
 
-  /**
-   * Get current subscription for a user
-   */
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PUBLIC METHODS
+  // ─────────────────────────────────────────────────────────────────────────────
+
   async getSubscription(userId) {
     let subscription = await Subscription.findOne({ userId });
-
     if (!subscription) {
-      // Create a free subscription record if none exists
       subscription = await Subscription.create({
         userId,
         tier: 'free',
@@ -30,19 +29,13 @@ class BillingService {
         provider: 'none',
       });
     }
-
     const plan = getPlan(subscription.tier);
     return { subscription, plan };
   }
 
-  /**
-   * Subscribe via Stripe — creates customer + subscription
-   * Document requirement: Stripe billing + Auto renewals
-   */
   async subscribeWithStripe({ userId, tier, interval, paymentMethodId, billingAddress, taxId }) {
     const user = await User.findById(userId).select('name email');
     if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 });
-
     if (tier === 'free') throw Object.assign(new Error('Cannot subscribe to free tier via billing'), { statusCode: 400 });
 
     const priceId = getStripePriceId(tier, interval);
@@ -53,14 +46,12 @@ class BillingService {
       subscription = new Subscription({ userId, tier: 'free', status: 'active', provider: 'none' });
     }
 
-    // Create Stripe customer if not exists
     let stripeCustomerId = subscription.stripe?.customerId;
     if (!stripeCustomerId) {
       const customer = await stripeService.createCustomer(user);
       stripeCustomerId = customer.id;
     }
 
-    // Create Stripe subscription
     const stripeSubscription = await stripeService.createSubscription({
       customerId: stripeCustomerId,
       priceId,
@@ -69,7 +60,6 @@ class BillingService {
       taxId,
     });
 
-    // Update subscription record
     subscription.tier = tier;
     subscription.status = this._mapStripeStatus(stripeSubscription.status);
     subscription.provider = 'stripe';
@@ -88,22 +78,15 @@ class BillingService {
     if (taxId) subscription.taxInfo = { taxId: taxId.value, taxIdType: taxId.type };
 
     await subscription.save();
-
-    // Update profile tier
     await Profile.findOneAndUpdate({ userId }, { tier });
 
     logger.info('Stripe subscription created for user: ' + userId + ' tier: ' + tier);
     return { subscription, stripeSubscription };
   }
 
-  /**
-   * Subscribe via Razorpay — creates customer + subscription
-   * Document requirement: Razorpay billing + Auto renewals
-   */
   async subscribeWithRazorpay({ userId, tier, interval, billingAddress }) {
     const user = await User.findById(userId).select('name email');
     if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 });
-
     if (tier === 'free') throw Object.assign(new Error('Cannot subscribe to free tier via billing'), { statusCode: 400 });
 
     const planId = getRazorpayPlanId(tier, interval);
@@ -114,17 +97,13 @@ class BillingService {
       subscription = new Subscription({ userId, tier: 'free', status: 'active', provider: 'none' });
     }
 
-    // Create Razorpay customer if not exists
     let razorpayCustomerId = subscription.razorpay?.customerId;
     if (!razorpayCustomerId) {
       const customer = await razorpayService.createCustomer(user);
       razorpayCustomerId = customer.id;
     }
 
-    // Total billing cycles: 12 months for both monthly and annual
     const totalCount = interval === 'annual' ? 1 : 12;
-
-    // Create Razorpay subscription
     const razorpaySubscription = await razorpayService.createSubscription({
       planId,
       customerId: razorpayCustomerId,
@@ -133,9 +112,8 @@ class BillingService {
       tier,
     });
 
-    // Update subscription record — pending payment confirmation
     subscription.tier = tier;
-    subscription.status = 'inactive'; // Activated after payment confirmed
+    subscription.status = 'inactive';
     subscription.provider = 'razorpay';
     subscription.autoRenew = true;
     subscription.razorpay = {
@@ -151,44 +129,30 @@ class BillingService {
     return {
       subscription,
       razorpaySubscription,
-      // Return these to frontend for Razorpay checkout
       keyId: process.env.RAZORPAY_KEY_ID,
       subscriptionId: razorpaySubscription.id,
     };
   }
 
-  /**
-   * Confirm Razorpay payment after frontend checkout
-   * Document requirement: Auto renewals — verify and activate
-   */
   async confirmRazorpayPayment({ userId, subscriptionId, paymentId, signature }) {
-    // Verify payment signature
     razorpayService.verifyPaymentSignature({ subscriptionId, paymentId, signature });
 
     const subscription = await Subscription.findOne({ userId, 'razorpay.subscriptionId': subscriptionId });
     if (!subscription) throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
 
-    // Activate subscription
     subscription.status = 'active';
     subscription.razorpay.paymentId = paymentId;
-
-    // Set period (monthly = 30 days from now)
     const now = new Date();
     subscription.currentPeriodStart = now;
     subscription.currentPeriodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
     await subscription.save();
 
-    // Update profile tier
     await Profile.findOneAndUpdate({ userId: subscription.userId }, { tier: subscription.tier });
 
     logger.info('Razorpay payment confirmed for user: ' + userId);
     return subscription;
   }
 
-  /**
-   * Cancel subscription
-   * Document requirement: Auto renewals — user can cancel
-   */
   async cancelSubscription(userId, cancelImmediately = false) {
     const subscription = await Subscription.findOne({ userId });
     if (!subscription || subscription.tier === 'free') {
@@ -217,16 +181,10 @@ class BillingService {
     return subscription;
   }
 
-  /**
-   * Upgrade or downgrade subscription tier
-   */
   async changeTier(userId, newTier, interval) {
     const subscription = await Subscription.findOne({ userId });
     if (!subscription) throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
-
-    if (subscription.tier === newTier) {
-      throw Object.assign(new Error('Already on this tier'), { statusCode: 400 });
-    }
+    if (subscription.tier === newTier) throw Object.assign(new Error('Already on this tier'), { statusCode: 400 });
 
     if (subscription.provider === 'stripe' && subscription.stripe.subscriptionId) {
       const newPriceId = getStripePriceId(newTier, interval);
@@ -238,7 +196,6 @@ class BillingService {
     subscription.tier = newTier;
     await subscription.save();
 
-    // Update profile tier
     const tierMap = { free: 'standard', premium: 'premium', enterprise: 'enterprise' };
     await Profile.findOneAndUpdate({ userId }, { tier: tierMap[newTier] || 'standard' });
 
@@ -246,9 +203,6 @@ class BillingService {
     return subscription;
   }
 
-  /**
-   * Create Stripe Checkout Session — hosted payment page approach
-   */
   async createCheckoutSession({ userId, tier, interval }) {
     const user = await User.findById(userId).select('name email');
     if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 });
@@ -283,33 +237,21 @@ class BillingService {
     return session;
   }
 
-  /**
-   * Create Stripe Billing Portal session — lets users manage their own billing
-   */
   async createBillingPortal(userId) {
     const subscription = await Subscription.findOne({ userId });
     if (!subscription?.stripe?.customerId) {
       throw Object.assign(new Error('No Stripe billing account found'), { statusCode: 400 });
     }
-
-    const session = await stripeService.createBillingPortalSession(
+    return stripeService.createBillingPortalSession(
       subscription.stripe.customerId,
       (process.env.FRONTEND_URL || 'http://localhost:3000') + '/billing'
     );
-
-    return session;
   }
 
-  /**
-   * Get user invoices from database
-   */
   async getInvoices(userId, options) {
     return invoiceService.getUserInvoices(userId, options);
   }
 
-  /**
-   * Get invoices from payment provider (live data)
-   */
   async getLiveInvoices(userId) {
     const subscription = await Subscription.findOne({ userId });
     if (!subscription) return [];
@@ -317,36 +259,43 @@ class BillingService {
     if (subscription.provider === 'stripe' && subscription.stripe?.customerId) {
       return stripeService.getInvoices(subscription.stripe.customerId);
     }
-
     if (subscription.provider === 'razorpay' && subscription.razorpay?.subscriptionId) {
       return razorpayService.getInvoices(subscription.razorpay.subscriptionId);
     }
-
     return [];
   }
 
-  /**
-   * Handle Stripe webhook events
-   * Document requirement: Auto renewals — process renewal events
-   */
+  // ─────────────────────────────────────────────────────────────────────────────
+  // WEBHOOK HANDLERS
+  // ─────────────────────────────────────────────────────────────────────────────
+
   async handleStripeWebhook(rawBody, signature) {
     const event = stripeService.verifyWebhookSignature(rawBody, signature);
-
     logger.info('Stripe webhook received: ' + event.type);
 
     switch (event.type) {
 
+      // ── Subscription lifecycle ───────────────────────────────────────────────
+
+      case 'customer.subscription.created': {
+        // Fires when Stripe creates the subscription object.
+        // At this point our DB record may not yet have subscriptionId (checkout flow).
+        // _syncStripeSubscription handles the lookup by subscriptionId — if not found
+        // yet it is a no-op and checkout.session.completed will handle it instead.
+        const stripeSub = event.data.object;
+        await this._syncStripeSubscription(stripeSub);
+        break;
+      }
+
       case 'customer.subscription.updated': {
-        const stripeSubscription = event.data.object;
-        await this._syncStripeSubscription(stripeSubscription);
+        const stripeSub = event.data.object;
+        await this._syncStripeSubscription(stripeSub);
         break;
       }
 
       case 'customer.subscription.deleted': {
-        const stripeSubscription = event.data.object;
-        const subscription = await Subscription.findOne({
-          'stripe.subscriptionId': stripeSubscription.id,
-        });
+        const stripeSub = event.data.object;
+        const subscription = await Subscription.findOne({ 'stripe.subscriptionId': stripeSub.id });
         if (subscription) {
           subscription.tier = 'free';
           subscription.status = 'cancelled';
@@ -359,7 +308,14 @@ class BillingService {
         break;
       }
 
+      // ── Invoice / payment ────────────────────────────────────────────────────
+
       case 'invoice.payment_succeeded': {
+        // IMPORTANT: During Stripe Checkout, this event fires BEFORE
+        // checkout.session.completed. At that moment our DB record has the
+        // customerId but NOT yet the subscriptionId (that is saved by
+        // checkout.session.completed which fires slightly later).
+        // Solution: look up by subscriptionId first, fall back to customerId.
         const stripeInvoice = event.data.object;
         await this._handleStripeInvoicePaid(stripeInvoice);
         break;
@@ -378,7 +334,11 @@ class BillingService {
         break;
       }
 
+      // ── Checkout ─────────────────────────────────────────────────────────────
+
       case 'checkout.session.completed': {
+        // This fires AFTER invoice.payment_succeeded during checkout flow.
+        // It saves the subscriptionId and syncs the period dates.
         const session = event.data.object;
         if (session.mode === 'subscription' && session.metadata?.userId) {
           await this._handleCheckoutCompleted(session);
@@ -393,12 +353,8 @@ class BillingService {
     return { received: true };
   }
 
-  /**
-   * Handle Razorpay webhook events
-   */
   async handleRazorpayWebhook(rawBody, signature) {
     razorpayService.verifyWebhookSignature(rawBody, signature);
-
     const event = JSON.parse(rawBody);
     logger.info('Razorpay webhook received: ' + event.event);
 
@@ -406,9 +362,7 @@ class BillingService {
 
       case 'subscription.activated': {
         const rpSub = event.payload.subscription.entity;
-        const subscription = await Subscription.findOne({
-          'razorpay.subscriptionId': rpSub.id,
-        });
+        const subscription = await Subscription.findOne({ 'razorpay.subscriptionId': rpSub.id });
         if (subscription) {
           subscription.status = 'active';
           await subscription.save();
@@ -419,9 +373,7 @@ class BillingService {
 
       case 'subscription.cancelled': {
         const rpSub = event.payload.subscription.entity;
-        const subscription = await Subscription.findOne({
-          'razorpay.subscriptionId': rpSub.id,
-        });
+        const subscription = await Subscription.findOne({ 'razorpay.subscriptionId': rpSub.id });
         if (subscription) {
           subscription.tier = 'free';
           subscription.status = 'cancelled';
@@ -446,10 +398,7 @@ class BillingService {
             subscription.currentPeriodStart = now;
             subscription.currentPeriodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
             await subscription.save();
-
-            // Create invoice record
             try {
-              const user = await User.findById(subscription.userId).select('name email');
               await invoiceService.createFromRazorpayPayment(
                 payment,
                 subscription.userId,
@@ -487,13 +436,15 @@ class BillingService {
     return { received: true };
   }
 
-  // ─── Private Helpers ───────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PRIVATE HELPERS
+  // ─────────────────────────────────────────────────────────────────────────────
 
   async _syncStripeSubscription(stripeSubscription) {
     const subscription = await Subscription.findOne({
       'stripe.subscriptionId': stripeSubscription.id,
     });
-    if (!subscription) return;
+    if (!subscription) return; // Not yet saved — checkout.session.completed handles it
 
     subscription.status = this._mapStripeStatus(stripeSubscription.status);
     subscription.currentPeriodStart = new Date(stripeSubscription.current_period_start * 1000);
@@ -508,12 +459,34 @@ class BillingService {
   }
 
   async _handleStripeInvoicePaid(stripeInvoice) {
-    const subscription = await Subscription.findOne({
+    // Step 1: Try to find by subscriptionId (standard renewal flow)
+    let subscription = await Subscription.findOne({
       'stripe.subscriptionId': stripeInvoice.subscription,
     });
-    if (!subscription) return;
 
-    // Ensure subscription is active after successful payment
+    // Step 2: Fall back to customerId (checkout flow — subscriptionId not yet saved)
+    // This happens because invoice.payment_succeeded fires BEFORE
+    // checkout.session.completed during the initial Stripe Checkout payment.
+    if (!subscription && stripeInvoice.customer) {
+      subscription = await Subscription.findOne({
+        'stripe.customerId': stripeInvoice.customer,
+      });
+    }
+
+    if (!subscription) {
+      logger.warn('Invoice paid but no subscription found for customer: ' + stripeInvoice.customer);
+      return;
+    }
+
+   if (stripeInvoice.period_start) {
+  const pStart = new Date(stripeInvoice.period_start * 1000);
+  const pEnd = new Date(stripeInvoice.period_end * 1000);
+  if (!isNaN(pStart.getTime())) {
+    subscription.currentPeriodStart = pStart;
+    subscription.currentPeriodEnd = pEnd;
+  }
+}
+
     subscription.status = 'active';
     await subscription.save();
 
@@ -525,6 +498,7 @@ class BillingService {
         subscription._id,
         subscription.tier
       );
+      logger.info('Invoice created for user: ' + subscription.userId);
     } catch (e) {
       logger.warn('Invoice save failed: ' + e.message);
     }
@@ -541,6 +515,19 @@ class BillingService {
     subscription.stripe = subscription.stripe || {};
     subscription.stripe.subscriptionId = session.subscription;
     subscription.autoRenew = true;
+
+    // Fetch and sync the period dates from Stripe subscription object
+    // so currentPeriodStart/End are never null after checkout
+    try {
+      const stripeSub = await stripeService.getSubscription(session.subscription);
+      if (stripeSub) {
+        subscription.currentPeriodStart = new Date(stripeSub.current_period_start * 1000);
+        subscription.currentPeriodEnd = new Date(stripeSub.current_period_end * 1000);
+      }
+    } catch (e) {
+      logger.warn('Could not fetch Stripe subscription for period sync: ' + e.message);
+    }
+
     await subscription.save();
 
     const tierMap = { premium: 'premium', enterprise: 'enterprise' };

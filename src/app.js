@@ -28,6 +28,8 @@ const gdprRoutes = require('./modules/users/gdpr.routes');
 
 // Route imports — Module 5: Tiered Membership & Billing
 const billingRoutes = require('./modules/billing/billing.routes');
+const moderationRoutes = require('./modules/moderation/moderation.routes');
+
 
 const app = express();
 
@@ -106,6 +108,7 @@ app.use('/api/communities', communityRoutes);
 // Billing — MIXED: GET /plans and webhooks are public, rest require auth.
 // The billing.routes.js file applies authenticate per-route correctly.
 app.use('/api/billing', billingRoutes);
+app.use('/api/moderation', moderationRoutes);
 
 // ─── FULLY PROTECTED ROUTES ───────────────────────────────────────────────────
 // Every single endpoint in these routers requires a valid JWT.
