@@ -1,5 +1,6 @@
 const Community = require('./community.model');
 const User = require('../auth/auth.model');
+const Blocklist = require('../moderation/blocklist.model');
 const cache = require('../../utils/cache');
 const logger = require('../../utils/logger');
 
@@ -96,6 +97,18 @@ class CommunityService {
 
     if (community.isMember(userId)) {
       throw Object.assign(new Error('You are already a member of this community'), { statusCode: 400 });
+    }
+
+    // FIX: check for active community ban before allowing rejoin — MODULE H requirement
+    const activeBan = await Blocklist.findOne({
+      type: 'community_ban',
+      blockedUserId: userId,
+      communityId,
+      isActive: true,
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    });
+    if (activeBan) {
+      throw Object.assign(new Error('You are banned from this community'), { statusCode: 403 });
     }
 
     community.members.push({ userId, role: 'member', joinedAt: new Date() });

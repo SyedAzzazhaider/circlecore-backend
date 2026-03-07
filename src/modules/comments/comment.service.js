@@ -1,5 +1,6 @@
 const Comment = require('./comment.model');
 const Post = require('../posts/post.model');
+const Blocklist = require('../moderation/blocklist.model');
 const reputationService = require('../users/reputation.service');
 const logger = require('../../utils/logger');
 
@@ -9,6 +10,18 @@ class CommentService {
     const post = await Post.findById(postId);
     if (!post || !post.isActive) {
       throw Object.assign(new Error('Post not found'), { statusCode: 404 });
+    }
+
+    // FIX: community ban enforcement — document requirement: MODULE H blocklists
+    const isBanned = await Blocklist.findOne({
+      type: 'community_ban',
+      blockedUserId: authorId,
+      communityId: post.communityId,
+      isActive: true,
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    });
+    if (isBanned) {
+      throw Object.assign(new Error('You are banned from commenting in this community'), { statusCode: 403 });
     }
 
     const comment = await Comment.create({

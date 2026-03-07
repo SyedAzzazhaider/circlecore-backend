@@ -2,6 +2,8 @@ const User = require('../auth/auth.model');
 const Community = require('../communities/community.model');
 const Post = require('../posts/post.model');
 const Event = require('../events/event.model');
+// Escape special regex characters from user input to prevent ReDoS attacks
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 class SearchService {
 
@@ -9,15 +11,15 @@ class SearchService {
     if (!query || query.trim().length < 2) {
       throw Object.assign(new Error('Search query must be at least 2 characters'), { statusCode: 400 });
     }
-
-    const searchRegex = new RegExp(query.trim(), 'i');
+    
+    const searchRegex = new RegExp(escapeRegex(query.trim()), 'i');
     const skip = (page - 1) * limit;
 
     const [users, communities, posts, events] = await Promise.all([
       User.find({
         $or: [{ name: searchRegex }, { email: searchRegex }],
         isEmailVerified: true,
-      }).select('name email role createdAt').limit(5),
+      }).select('name role createdAt').limit(5),
 
       Community.find({
         $or: [{ name: searchRegex }, { description: searchRegex }, { tags: searchRegex }],
@@ -55,7 +57,8 @@ class SearchService {
   }
 
   async searchCommunities(query, { page = 1, limit = 10, category }) {
-    const searchRegex = new RegExp(query.trim(), 'i');
+
+    const searchRegex = new RegExp(escapeRegex(query.trim()), 'i');
     const filter = {
       $or: [{ name: searchRegex }, { description: searchRegex }, { tags: searchRegex }],
       isActive: true,
@@ -76,7 +79,7 @@ class SearchService {
   }
 
   async searchPosts(query, { page = 1, limit = 10, communityId }) {
-    const searchRegex = new RegExp(query.trim(), 'i');
+    const searchRegex = new RegExp(escapeRegex(query.trim()), 'i');
     const filter = {
       $or: [{ title: searchRegex }, { content: searchRegex }, { tags: searchRegex }],
       isActive: true,

@@ -160,14 +160,14 @@ class ModerationService {
       ipAddress, userAgent,
     });
 
-    // Use correct method name: createNotification not create
+    // FIX: use valid enum value 'moderator_action' from notification.model.js
     try {
       await notificationService.createNotification({
         userId,
-        type: 'moderation_warning',
+        type: 'moderator_action',
         title: 'You have received a warning',
         message: reason,
-        meta: { warningId: warning._id, severity },
+        meta: {},
       });
     } catch (e) {
       logger.warn('Warning notification failed: ' + e.message);
@@ -220,15 +220,17 @@ class ModerationService {
       ipAddress, userAgent,
     });
 
-    // Use correct method name: createNotification not create
+    // FIX: use valid enum value 'moderator_action' + correct title/message for suspension
     try {
-      const durationText = suspendedUntil ? `until ${new Date(suspendedUntil).toLocaleDateString()}` : 'permanently';
+      const durationText = suspendedUntil
+        ? `until ${new Date(suspendedUntil).toLocaleDateString()}`
+        : 'permanently';
       await notificationService.createNotification({
         userId,
-        type: 'account_suspended',
+        type: 'moderator_action',
         title: 'Your account has been suspended',
         message: `Your account has been suspended ${durationText}. Reason: ${reason}`,
-        meta: { reason, suspendedUntil },
+        meta: {},
       });
     } catch (e) {
       logger.warn('Suspension notification failed: ' + e.message);

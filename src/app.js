@@ -25,6 +25,7 @@ const searchRoutes = require('./modules/search/search.routes');
 const channelRoutes = require('./modules/communities/channel.routes');
 const announcementRoutes = require('./modules/admin/announcement.routes');
 const gdprRoutes = require('./modules/users/gdpr.routes');
+const uploadRoutes = require('./modules/upload/upload.routes');
 
 // Route imports — Module 5: Tiered Membership & Billing
 const billingRoutes = require('./modules/billing/billing.routes');
@@ -122,6 +123,7 @@ app.use('/api/search',        ...protectedMiddleware, searchRoutes);
 app.use('/api/channels',      ...protectedMiddleware, channelRoutes);
 app.use('/api/announcements', ...protectedMiddleware, announcementRoutes);
 app.use('/api/gdpr',          ...protectedMiddleware, gdprRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // ─── 404 HANDLER ──────────────────────────────────────────────────────────────
 app.use(function (req, res) {

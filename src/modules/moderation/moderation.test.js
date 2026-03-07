@@ -52,19 +52,22 @@ beforeAll(async () => {
   // Register member
   const inv1 = await InviteCode.create({ createdBy: adminUser._id });
   await request(app).post('/api/auth/register').send({ name: 'Mod Member', email: 'member@modtest.com', password: 'Password123!', inviteCode: inv1.code });
-  member = await User.findOneAndUpdate({ email: 'member@modtest.com' }, { isEmailVerified: true }, { new: true });
+  // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
+  member = await User.findOneAndUpdate({ email: 'member@modtest.com' }, { isEmailVerified: true }, { returnDocument: 'after' });
   await Profile.findOneAndUpdate({ userId: member._id }, {}, { upsert: true });
 
   // Register moderator
   const inv2 = await InviteCode.create({ createdBy: adminUser._id });
   await request(app).post('/api/auth/register').send({ name: 'Mod Moderator', email: 'moderator@modtest.com', password: 'Password123!', inviteCode: inv2.code });
-  moderator = await User.findOneAndUpdate({ email: 'moderator@modtest.com' }, { isEmailVerified: true, role: 'moderator' }, { new: true });
+  // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
+  moderator = await User.findOneAndUpdate({ email: 'moderator@modtest.com' }, { isEmailVerified: true, role: 'moderator' }, { returnDocument: 'after' });
   await Profile.findOneAndUpdate({ userId: moderator._id }, {}, { upsert: true });
 
   // Register admin
   const inv3 = await InviteCode.create({ createdBy: adminUser._id });
   await request(app).post('/api/auth/register').send({ name: 'Mod Admin', email: 'admin@modtest.com', password: 'Password123!', inviteCode: inv3.code });
-  admin = await User.findOneAndUpdate({ email: 'admin@modtest.com' }, { isEmailVerified: true, role: 'admin' }, { new: true });
+  // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
+  admin = await User.findOneAndUpdate({ email: 'admin@modtest.com' }, { isEmailVerified: true, role: 'admin' }, { returnDocument: 'after' });
   await Profile.findOneAndUpdate({ userId: admin._id }, {}, { upsert: true });
 
   // Login all three
@@ -192,7 +195,8 @@ describe('Moderation Module', () => {
     beforeAll(async () => {
       const inv = await InviteCode.create({ createdBy: adminUser._id });
       await request(app).post('/api/auth/register').send({ name: 'Suspend Target', email: 'suspend@modtest.com', password: 'Password123!', inviteCode: inv.code });
-      suspendTarget = await User.findOneAndUpdate({ email: 'suspend@modtest.com' }, { isEmailVerified: true }, { new: true });
+      // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
+      suspendTarget = await User.findOneAndUpdate({ email: 'suspend@modtest.com' }, { isEmailVerified: true }, { returnDocument: 'after' });
       await Profile.findOneAndUpdate({ userId: suspendTarget._id }, {}, { upsert: true });
     });
 
@@ -223,7 +227,8 @@ describe('Moderation Module', () => {
     beforeAll(async () => {
       const inv = await InviteCode.create({ createdBy: adminUser._id });
       await request(app).post('/api/auth/register').send({ name: 'Ban Target', email: 'bantarget@modtest.com', password: 'Password123!', inviteCode: inv.code });
-      banTarget = await User.findOneAndUpdate({ email: 'bantarget@modtest.com' }, { isEmailVerified: true }, { new: true });
+      // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
+      banTarget = await User.findOneAndUpdate({ email: 'bantarget@modtest.com' }, { isEmailVerified: true }, { returnDocument: 'after' });
       await Profile.findOneAndUpdate({ userId: banTarget._id }, {}, { upsert: true });
     });
 

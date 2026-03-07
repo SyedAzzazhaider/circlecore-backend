@@ -44,13 +44,34 @@ class CacheService {
     }
   }
 
+  /**
+   * FIX: replaced Redis KEYS (blocking O(N)) with SCAN (non-blocking, cursor-based).
+   * KEYS blocks the entire Redis server while scanning — dangerous in production
+   * with large key sets. SCAN iterates in small batches without blocking.
+   */
   async deletePattern(pattern) {
     try {
       if (!this.isAvailable()) return false;
-      const keys = await getRedis().keys(pattern);
-      if (keys.length > 0) {
-        await getRedis().del(...keys);
+
+      const client = getRedis();
+      let cursor = '0';
+      const keysToDelete = [];
+
+      do {
+        const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = nextCursor;
+        keysToDelete.push(...keys);
+      } while (cursor !== '0');
+
+      if (keysToDelete.length > 0) {
+        // Delete in batches of 500 to avoid oversized Redis commands
+        const BATCH_SIZE = 500;
+        for (let i = 0; i < keysToDelete.length; i += BATCH_SIZE) {
+          const batch = keysToDelete.slice(i, i + BATCH_SIZE);
+          await client.del(...batch);
+        }
       }
+
       return true;
     } catch (error) {
       logger.error('Cache deletePattern error: ' + error.message);

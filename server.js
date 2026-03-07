@@ -42,7 +42,9 @@ const startServer = async () => {
     // Document requirement: Email digest scheduler — weekly digest to all users
     const digestService = require('./src/modules/notifications/digest.service');
     digestService.scheduleWeeklyDigest();
-
+    // Document requirement: MODULE H — Auto-lift expired temporary suspensions
+    const moderationService = require('./src/modules/moderation/moderation.service');
+    setInterval(() => moderationService.liftExpiredSuspensions(), 60 * 60 * 1000);
     // Graceful shutdown
     process.on('SIGTERM', async () => {
       logger.info('SIGTERM received. Shutting down gracefully...');

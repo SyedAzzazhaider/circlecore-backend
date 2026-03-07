@@ -1,5 +1,6 @@
 const Post = require('./post.model');
 const Community = require('../communities/community.model');
+const Blocklist = require('../moderation/blocklist.model');
 const cache = require('../../utils/cache');
 const { emitToCommunity } = require('../../config/socket');
 const logger = require('../../utils/logger');
@@ -12,6 +13,18 @@ class PostService {
 
     if (!community.isMember(authorId)) {
       throw Object.assign(new Error('You must be a member to post in this community'), { statusCode: 403 });
+    }
+
+    // FIX: community ban enforcement — document requirement: MODULE H blocklists
+    const isBanned = await Blocklist.findOne({
+      type: 'community_ban',
+      blockedUserId: authorId,
+      communityId,
+      isActive: true,
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    });
+    if (isBanned) {
+      throw Object.assign(new Error('You are banned from posting in this community'), { statusCode: 403 });
     }
 
     // Document requirement: validate poll options if type is poll
@@ -278,10 +291,11 @@ class PostService {
       throw Object.assign(new Error('Only admins and moderators can pin posts'), { statusCode: 403 });
     }
 
+    // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
     const post = await Post.findByIdAndUpdate(
       postId,
       [{ $set: { isPinned: { $not: '$isPinned' } } }],
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     await cache.deletePattern('feed:' + communityId + ':*');
@@ -290,7 +304,6 @@ class PostService {
 
   /**
    * Document requirement: Poll voting
-   * Cast or retract a vote on a poll option
    */
   async votePoll(postId, userId, optionId) {
     const post = await Post.findById(postId);
@@ -310,7 +323,6 @@ class PostService {
     const hasVotedThis = option.votes.some(v => v.toString() === userId.toString());
 
     if (!post.poll.allowMultiple) {
-      // Remove existing votes from all options first
       post.poll.options.forEach(opt => {
         opt.votes = opt.votes.filter(v => v.toString() !== userId.toString());
         opt.voteCount = opt.votes.length;
@@ -318,10 +330,8 @@ class PostService {
     }
 
     if (hasVotedThis) {
-      // Retract vote
       option.votes = option.votes.filter(v => v.toString() !== userId.toString());
     } else {
-      // Cast vote
       option.votes.push(userId);
     }
 
@@ -347,7 +357,6 @@ class PostService {
 
   /**
    * Document requirement: Hashtag search
-   * Search posts by a specific hashtag/tag
    */
   async getPostsByTag(tag, { page = 1, limit = 10 }) {
     const skip = (page - 1) * limit;
@@ -374,10 +383,8 @@ class PostService {
     };
   }
 
-
-/**
+  /**
    * Document requirement: Mention notifications
-   * Detects @username mentions in content and sends notifications
    */
   async detectAndNotifyMentions(content, authorId, sourceId, sourceType) {
     if (!content) return;
@@ -416,11 +423,6 @@ class PostService {
       }
     }
   }
-
-
-
-
-
 }
 
 module.exports = new PostService();
