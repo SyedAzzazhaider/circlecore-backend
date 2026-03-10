@@ -1,5 +1,6 @@
 const Event     = require('./event.model');
 const Community = require('../communities/community.model');
+const analytics = require('../../services/analytics.service');
 const logger    = require('../../utils/logger');
 
 /**
@@ -220,6 +221,7 @@ class EventService {
         logger.warn('event_invite notification failed: ' + e.message);
       }
     }
+    analytics.eventRsvp(userId, { eventId, communityId: event.communityId, status });
 
     logger.info('User ' + userId + ' RSVP ' + status + ' for event: ' + eventId);
     return event;

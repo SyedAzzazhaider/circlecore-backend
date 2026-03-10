@@ -1,4 +1,5 @@
 const Post = require('./post.model');
+const analytics = require('../../services/analytics.service');
 const Community = require('../communities/community.model');
 const Blocklist = require('../moderation/blocklist.model');
 const cache = require('../../utils/cache');
@@ -108,6 +109,7 @@ class PostService {
     }
 
     logger.info('Post created: ' + post._id);
+    analytics.postCreated(authorId, { communityId, type: postData.type });
     return post;
   }
 

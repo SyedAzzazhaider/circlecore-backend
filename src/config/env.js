@@ -39,6 +39,7 @@ const productionRequired = [
   // CC-05 FIX: OneSignal push notifications — MODULE F requirement
   'ONESIGNAL_APP_ID',
   'ONESIGNAL_API_KEY',
+    'MIXPANEL_TOKEN',
 ];
 
 const validateEnv = () => {

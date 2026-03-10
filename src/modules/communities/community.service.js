@@ -1,6 +1,7 @@
 const Community = require('./community.model');
 const User = require('../auth/auth.model');
 const Blocklist = require('../moderation/blocklist.model');
+const analytics = require('../../services/analytics.service');
 const cache = require('../../utils/cache');
 const logger = require('../../utils/logger');
 
@@ -118,6 +119,7 @@ class CommunityService {
     await cache.delete(cache.keys.community(community.slug));
     await cache.deletePattern('communities:*');
 
+    analytics.communityJoined(userId, { communityId });
     logger.info('User ' + userId + ' joined community: ' + community.slug);
 
     // Document requirement: seniority tracking — check senior badge on join

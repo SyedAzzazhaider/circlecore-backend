@@ -6,6 +6,7 @@ const razorpayService = require('./razorpay.service');
 const invoiceService = require('./invoice.service');
 const { getPlan, getStripePriceId, getRazorpayPlanId } = require('./plans.config');
 const logger = require('../../utils/logger');
+const analytics = require('../../services/analytics.service');
 
 /**
  * Billing Service
@@ -80,6 +81,7 @@ class BillingService {
     await subscription.save();
     await Profile.findOneAndUpdate({ userId }, { tier });
 
+   analytics.subscriptionStarted(userId, { tier, gateway: 'stripe', interval });
     logger.info('Stripe subscription created for user: ' + userId + ' tier: ' + tier);
     return { subscription, stripeSubscription };
   }
@@ -125,6 +127,7 @@ class BillingService {
 
     await subscription.save();
 
+    analytics.subscriptionStarted(userId, { tier, gateway: 'razorpay', interval });
     logger.info('Razorpay subscription created for user: ' + userId + ' tier: ' + tier);
     return {
       subscription,
@@ -177,6 +180,7 @@ class BillingService {
     }
 
     await subscription.save();
+    analytics.subscriptionCancelled(userId, { cancelImmediately, tier: subscription.tier });
     logger.info('Subscription cancelled for user: ' + userId + ' immediately: ' + cancelImmediately);
     return subscription;
   }
