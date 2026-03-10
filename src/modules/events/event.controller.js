@@ -79,6 +79,24 @@ class EventController {
     } catch (error) { next(error); }
   }
 
+  async inviteUser(req, res, next) {
+    try {
+      const { userId } = req.body;
+
+      if (!userId) {
+        return ApiResponse.badRequest(res, 'userId is required');
+      }
+
+      const result = await eventService.inviteToEvent(
+        req.params.id,
+        userId,
+        req.user._id
+      );
+
+      return ApiResponse.success(res, result, result.message);
+    } catch (error) { next(error); }
+  }
+
   async downloadIcal(req, res, next) {
     try {
       const { ical, filename } = await eventService.getIcal(req.params.id);

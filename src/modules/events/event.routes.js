@@ -32,6 +32,7 @@ router.post('/', authenticate, createEventValidator, validate, eventController.c
 
 // ─── RSVP & Cancel ────────────────────────────────────────────────────────────
 router.post('/:id/rsvp',   authenticate, eventController.rsvp);
+router.post('/:id/invite', authenticate, eventController.inviteUser);
 router.patch('/:id/cancel', authenticate, eventController.cancel);
 
 // ─── Calendar sync ────────────────────────────────────────────────────────────

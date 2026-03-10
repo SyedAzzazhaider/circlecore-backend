@@ -273,6 +273,69 @@ class EventService {
     const calendarService = require('./calendar.service');
     return calendarService.getCalendarLinks(event);
   }
+  async inviteToEvent(eventId, invitedUserId, inviterUserId) {
+    const event = await Event.findById(eventId)
+      .populate('communityId', 'name');
+    if (!event || !event.isActive) {
+      throw Object.assign(new Error('Event not found'), { statusCode: 404 });
+    }
+    if (event.isCancelled) {
+      throw Object.assign(new Error('Cannot invite to a cancelled event'), { statusCode: 400 });
+    }
+
+    // Only event creator or community admin can invite
+    const community = await Community.findById(event.communityId);
+    if (!community) {
+      throw Object.assign(new Error('Community not found'), { statusCode: 404 });
+    }
+
+    const inviterRole = community.getMemberRole(inviterUserId);
+    const isCreator   = event.createdBy.toString() === inviterUserId.toString();
+    const isAdmin     = ['moderator', 'admin'].includes(inviterRole);
+
+    if (!isCreator && !isAdmin) {
+      throw Object.assign(
+        new Error('Only the event creator or community admin can send invites'),
+        { statusCode: 403 }
+      );
+    }
+
+    // Check invited user is a community member
+    if (!community.isMember(invitedUserId)) {
+      throw Object.assign(
+        new Error('You can only invite community members to events'),
+        { statusCode: 400 }
+      );
+    }
+
+    // Prevent duplicate invites — check if already RSVP'd
+    const alreadyRsvp = event.rsvpList.some(
+      r => r.userId.toString() === invitedUserId.toString()
+    );
+    if (alreadyRsvp) {
+      throw Object.assign(
+        new Error('User has already responded to this event'),
+        { statusCode: 409 }
+      );
+    }
+
+    // Send event_invite notification
+    const NotificationService = require('../notifications/notification.service');
+    await NotificationService.createNotification({
+      userId:  invitedUserId,
+      type:    'event_invite',
+      title:   'You have been invited to an event',
+      message: 'You were invited to "' + event.title + '" in ' + event.communityId.name,
+      meta: {
+        eventId:     event._id,
+        communityId: event.communityId._id,
+        fromUserId:  inviterUserId,
+      },
+    });
+
+    logger.info('Event invite sent — event: ' + eventId + ' to user: ' + invitedUserId);
+    return { message: 'Invite sent successfully' };
+  }
 
   async getIcal(eventId) {
     const event = await Event.findById(eventId);
