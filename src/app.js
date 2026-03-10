@@ -43,6 +43,7 @@ const announcementRoutes = require('./modules/admin/announcement.routes');
 const gdprRoutes         = require('./modules/users/gdpr.routes');
 const uploadRoutes       = require('./modules/upload/upload.routes');
 const billingRoutes      = require('./modules/billing/billing.routes');
+const adminRoutes        = require('./modules/admin/admin.routes');
 const moderationRoutes   = require('./modules/moderation/moderation.routes');
 
 const app = express();
@@ -178,6 +179,7 @@ app.use('/api/channels',      ...protectedMiddleware, channelRoutes);
 app.use('/api/announcements', ...protectedMiddleware, announcementRoutes);
 app.use('/api/gdpr',          ...protectedMiddleware, gdprRoutes);
 app.use('/api/upload',        uploadRoutes);
+app.use('/api/admin',         ...protectedMiddleware, adminRoutes);
 
 
 // ─── CC-30 FIX: API Documentation (development only) ──────────────────────────

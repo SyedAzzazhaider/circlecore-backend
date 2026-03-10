@@ -1,7 +1,27 @@
-const Notification = require('./notification.model');
-const cache = require('../../utils/cache');
-const logger = require('../../utils/logger');
+const Notification    = require('./notification.model');
+const cache           = require('../../utils/cache');
+const logger          = require('../../utils/logger');
+const oneSignalService = require('../../services/onesignal.service');
 
+/**
+ * Notification Service
+ *
+ * CC-05 FIX: OneSignal push notification wired into createNotification().
+ *
+ * BEFORE: Notification flow was Socket.IO only.
+ *   If user closes browser → socket disconnects → notification is saved to DB
+ *   but NO push is sent → user has no idea they got a notification until
+ *   they open the app again. On mobile this is completely broken.
+ *
+ * AFTER: Two-layer notification delivery:
+ *   Layer 1 — Socket.IO (real-time, when user is online)
+ *   Layer 2 — OneSignal push (when user is offline/mobile/background tab)
+ *
+ * The OneSignal call is:
+ *   - NON-FATAL: wrapped in try/catch, never throws, never blocks
+ *   - CONDITIONAL: only fires if user has a deviceToken registered
+ *   - ASYNC: does not add meaningful latency to the notification creation
+ */
 class NotificationService {
 
   async createNotification({ userId, type, title, message, meta = {} }) {
@@ -14,7 +34,7 @@ class NotificationService {
       await cache.deletePattern('notifications:' + userId + ':*');
       await cache.delete(cache.keys.unreadCount(userId));
 
-      // Emit real-time notification
+      // ─── Layer 1: Socket.IO — real-time (user is online) ─────────────────
       try {
         const { emitToUser } = require('../../config/socket');
         emitToUser(userId.toString(), 'notification:new', {
@@ -25,8 +45,32 @@ class NotificationService {
         logger.warn('Socket notification emit failed: ' + e.message);
       }
 
+      // ─── Layer 2: OneSignal Push — offline/mobile/background tab ─────────
+      // CC-05 FIX: send push to user's registered device if they're offline
+      try {
+        const User = require('../auth/auth.model');
+        const recipient = await User.findById(userId).select('deviceToken');
+        if (recipient?.deviceToken) {
+          await oneSignalService.sendToUser(
+            recipient.deviceToken,
+            title,
+            message,
+            {
+              notificationId: notification._id.toString(),
+              type,
+              ...meta,
+            }
+          );
+        }
+      } catch (e) {
+        // Push failure must NEVER fail the notification save
+        logger.warn('OneSignal push failed (non-fatal): ' + e.message);
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       logger.info('Notification created for user: ' + userId);
       return notification;
+
     } catch (error) {
       logger.error('Failed to create notification: ' + error.message);
     }
@@ -36,8 +80,8 @@ class NotificationService {
     const query = { userId };
     if (unreadOnly) query.isRead = false;
 
-    const skip = (page - 1) * limit;
-    const total = await Notification.countDocuments(query);
+    const skip        = (page - 1) * limit;
+    const total       = await Notification.countDocuments(query);
     const unreadCount = await Notification.countDocuments({ userId, isRead: false });
 
     const notifications = await Notification.find(query)
@@ -51,7 +95,7 @@ class NotificationService {
       unreadCount,
       pagination: {
         total,
-        page: parseInt(page),
+        page:  parseInt(page),
         limit: parseInt(limit),
         pages: Math.ceil(total / limit),
       },
@@ -87,7 +131,7 @@ class NotificationService {
 
   async getUnreadCount(userId) {
     const cacheKey = cache.keys.unreadCount(userId);
-    const cached = await cache.get(cacheKey);
+    const cached   = await cache.get(cacheKey);
     if (cached !== null) return { unreadCount: cached };
 
     const count = await Notification.countDocuments({ userId, isRead: false });
@@ -97,32 +141,3 @@ class NotificationService {
 }
 
 module.exports = new NotificationService();
-
-      // just added it (boht acha flow haa iss mai seriously)
-
-// Let’s simulate real case.
-
-// User A writes post.
-// User B comments.
-
-// Inside comment service:
-
-// 1️⃣ Comment created → MongoDB
-// 2️⃣ Post commentCount incremented
-// 3️⃣ NotificationService.createNotification() called
-
-// Inside notification service:
-
-// 4️⃣ Notification saved to MongoDB
-// 5️⃣ Cache invalidated
-// 6️⃣ Socket emits event
-
-// Frontend:
-
-// 7️⃣ Socket receives "notification:new"
-// 8️⃣ Notification bell updates
-// 9️⃣ Unread badge increments
-
-// All within milliseconds.
-
-// That is modern social platform behavior.

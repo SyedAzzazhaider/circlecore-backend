@@ -3,22 +3,20 @@ const mongoose = require('mongoose');
 /**
  * Event Model
  *
- * CC-20 FIX: Compound indexes added for queries introduced in Steps 2 and 3.
+ * CC-18 FIX: Full-text search index added.
  *
- * getAllUpcoming() — added in Step 2 (CC-08) — queries:
- *   { isActive: true, isCancelled: false, startDate: { $gte: now } }
+ * CRITICAL BUG IN AUDIT REPORT — CORRECTED HERE:
+ * The audit recommended indexing { title: 'text', description: 'text' }
+ * but this schema uses 'details' as the event body field, NOT 'description'.
+ * Indexing 'description' would create an index on a non-existent field —
+ * MongoDB would accept it silently but search would return zero results.
  *
- * Without a compound index, MongoDB falls back to the single-field { startDate: 1 }
- * index but still has to filter isCancelled and isActive in-memory.
+ * Correct index: { title: 'text', details: 'text' }
  *
- * With { isActive: 1, isCancelled: 1, startDate: 1 } compound index:
- *   - MongoDB eliminates cancelled/inactive events at the index level
- *   - startDate range scan is applied only to the remaining subset
- *   - Covers the full WHERE clause with no in-memory filtering
- *
- * Also added: { 'rsvpList.userId': 1 } for getMyRSVPs() which queries
- *   Event.find({ 'rsvpList.userId': userId }) — an array field that requires
- *   a multi-key index to avoid a full collection scan.
+ * Also preserved all compound indexes added in Step 4:
+ *   { isActive, isCancelled, startDate }  → getAllUpcoming() CC-08
+ *   { communityId, isActive, ... }        → getCommunityEvents()
+ *   { 'rsvpList.userId' }                 → getMyRSVPs()
  */
 const eventSchema = new mongoose.Schema({
   communityId: {
@@ -37,6 +35,7 @@ const eventSchema = new mongoose.Schema({
     trim: true,
     maxlength: [200, 'Title cannot exceed 200 characters'],
   },
+  // Field name is 'details' — not 'description'
   details: {
     type: String,
     required: [true, 'Description is required'],
@@ -68,31 +67,21 @@ const eventSchema = new mongoose.Schema({
   tags:          { type: [String], default: [] },
 }, { timestamps: true });
 
-// ─── CC-20 FIX: Indexes ───────────────────────────────────────────────────────
+// ─── Step 4 compound indexes (preserved) ──────────────────────────────────────
+eventSchema.index({ isActive: 1, isCancelled: 1, startDate: 1 },                  { background: true });
+eventSchema.index({ communityId: 1, isActive: 1, isCancelled: 1, startDate: 1 }, { background: true });
+eventSchema.index({ 'rsvpList.userId': 1 },                                        { background: true });
+eventSchema.index({ communityId: 1, startDate: 1 },                               { background: true });
+eventSchema.index({ createdBy: 1 },                                                { background: true });
+eventSchema.index({ startDate: 1 },                                                { background: true });
+eventSchema.index({ tags: 1 },                                                     { background: true });
 
-// CC-08 getAllUpcoming() — primary compound: covers isActive + isCancelled + date range
+// ─── CC-18 FIX: Full-text search index ────────────────────────────────────────
+// USES 'details' not 'description' — matches the actual schema field name.
+// Audit report had a bug here — indexing 'description' would silently fail.
 eventSchema.index(
-  { isActive: 1, isCancelled: 1, startDate: 1 },
-  { background: true }
+  { title: 'text', details: 'text' },
+  { weights: { title: 10, details: 1 }, background: true }
 );
-
-// Community events page — getCommunityEvents()
-eventSchema.index(
-  { communityId: 1, isActive: 1, isCancelled: 1, startDate: 1 },
-  { background: true }
-);
-
-// getMyRSVPs() — queries by nested rsvpList.userId (multi-key index required)
-eventSchema.index({ 'rsvpList.userId': 1 }, { background: true });
-
-// Preserved original indexes (kept as-is for backward compatibility)
-eventSchema.index({ communityId: 1, startDate: 1 }, { background: true });
-eventSchema.index({ createdBy: 1 },                  { background: true });
-eventSchema.index({ startDate: 1 },                   { background: true });
-
-// Tags search
-eventSchema.index({ tags: 1 }, { background: true });
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = mongoose.model('Event', eventSchema);
