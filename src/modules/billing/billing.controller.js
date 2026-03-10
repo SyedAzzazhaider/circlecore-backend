@@ -206,7 +206,9 @@ class BillingController {
         return res.status(400).json({ success: false, message: 'Missing x-razorpay-signature header' });
       }
 
-      const rawBody = JSON.stringify(req.body);
+      // CC-02 FIX: req.body is now a Buffer (express.raw applied in billing.routes.js).
+      // Pass it directly — no JSON.stringify() re-serialization which broke HMAC.
+      const rawBody = req.body; // Buffer
       const result = await billingService.handleRazorpayWebhook(rawBody, signature);
       return res.status(200).json(result);
     } catch (error) {

@@ -87,7 +87,10 @@ router.post('/invite-code', authenticate, authController.generateInviteCode);
 // ─── INVITE REDEEM ────────────────────────────────────────────────────────────
 // Document Section 9 API Contract: POST /invites/redeem
 // Public — rate-limited to prevent invite code enumeration.
-router.post('/invites/redeem', authLimiter, authController.redeemInviteCode);
+// CC-03 FIX: was '/invites/redeem' — combined with app.js mount at /api/invites
+// that created /api/invites/invites/redeem (double path, 404 in production).
+// Fixed to '/redeem' → resolves correctly to POST /api/invites/redeem
+router.post('/redeem', authLimiter, authController.redeemInviteCode);
 
 // ─── TWO-FACTOR AUTHENTICATION ────────────────────────────────────────────────
 // All 2FA routes live at /api/auth/2fa/*

@@ -1,7 +1,24 @@
 const eventService = require('./event.service');
-const ApiResponse = require('../../utils/apiResponse');
+const ApiResponse  = require('../../utils/apiResponse');
+
+/**
+ * Event Controller — MODULE D/E
+ *
+ * CC-08 FIX: getAll() — controller handler for GET /api/events
+ *   Global platform-wide event discovery with optional filters.
+ */
 
 class EventController {
+
+  // CC-08 FIX: Global event discovery
+  // Supports: ?page, ?limit, ?type (online|in-person), ?communityId
+  async getAll(req, res, next) {
+    try {
+      const { page, limit, type, communityId } = req.query;
+      const result = await eventService.getAllUpcoming({ page, limit, type, communityId });
+      return ApiResponse.success(res, result, 'Upcoming events fetched');
+    } catch (error) { next(error); }
+  }
 
   async create(req, res, next) {
     try {
@@ -22,7 +39,7 @@ class EventController {
       const result = await eventService.getCommunityEvents(
         req.params.communityId, { page, limit, upcoming: upcoming !== 'false' }
       );
-      return ApiResponse.success(res, result, 'Events fetched');
+      return ApiResponse.success(res, result, 'Community events fetched');
     } catch (error) { next(error); }
   }
 
@@ -55,7 +72,6 @@ class EventController {
     } catch (error) { next(error); }
   }
 
-  // Document requirement: Calendar sync — get all calendar links
   async getCalendarLinks(req, res, next) {
     try {
       const links = await eventService.getCalendarLinks(req.params.id);
@@ -63,7 +79,6 @@ class EventController {
     } catch (error) { next(error); }
   }
 
-  // Document requirement: Calendar sync — download iCal file
   async downloadIcal(req, res, next) {
     try {
       const { ical, filename } = await eventService.getIcal(req.params.id);

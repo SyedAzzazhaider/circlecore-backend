@@ -1,7 +1,83 @@
-node_modules/
+# ─────────────────────────────────────────────────────────────────────────────
+# CircleCore Backend — .gitignore
+# CC-29 FIX: .gitignore was missing from the project root.
+# Without it, running `git add .` would commit:
+#   - .env (live credentials — instant security breach)
+#   - node_modules (300MB+ of dependencies)
+#   - logs/ (noise + potential PII in request logs)
+#   - coverage/ (CI artifacts — not source code)
+#   - Apple private key file (used for Sign in with Apple)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── Environment & Secrets ────────────────────────────────────────────────────
 .env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.test
+# Apple OAuth private key — NEVER commit
+keys/
+*.p8
+*.pem
+*.key
+*.cert
+*.pfx
+
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.pnpm-debug.log*
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
 logs/
-coverage/
-dist/
-.DS_Store
 *.log
+combined.log
+error.log
+pm2.log
+
+# ─── Test Coverage ────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+junit.xml
+
+# ─── Build Output ─────────────────────────────────────────────────────────────
+dist/
+build/
+
+# ─── Upload temp files ────────────────────────────────────────────────────────
+uploads/
+tmp/
+temp/
+
+# ─── IDE & Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.editorconfig
+
+# ─── OS files ─────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ─── Docker ───────────────────────────────────────────────────────────────────
+.docker/
+docker-compose.override.yml
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+.cache/
+.temp/
+*.swp
+*.swo
+*~

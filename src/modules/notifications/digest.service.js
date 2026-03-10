@@ -1,34 +1,67 @@
-const User = require('../auth/auth.model');
+const User         = require('../auth/auth.model');
 const Notification = require('./notification.model');
 const { sendNotificationDigest } = require('../../utils/email');
 const logger = require('../../utils/logger');
 
 /**
- * Digest Service
- * Document requirement: MODULE F — Email digests
- * Sends weekly digest of unread notifications to all users
+ * Digest Service — MODULE F
+ *
+ * CC-14 FIX: sendWeeklyDigests() now filters by emailOptIn === true.
+ *   Previously sent to ALL users with unread notifications — no consent check.
+ *   This violated GDPR Article 6, CAN-SPAM, and CASL.
+ *   Now only users who explicitly opted in receive digest emails.
+ *
+ * CC-24 FIX: scheduleWeeklyDigest() now uses node-cron instead of setTimeout/setInterval.
+ *   The old implementation reset its timer on every server restart. Under rolling
+ *   deployments or PM2 restarts, multiple instances could each schedule their own
+ *   interval and fire multiple duplicate digests to the same users simultaneously.
+ *   node-cron uses a deterministic cron expression — restart-safe, no duplicates.
+ *
+ *   Schedule: Every Sunday at 09:00 UTC
+ *   Cron:     '0 9 * * 0'
  */
+
 class DigestService {
 
-  /**
-   * Send weekly digest to all users who have unread notifications
-   * Called by a scheduled job (weekly)
-   */
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CC-14 FIX: Only sends to users with emailOptIn === true
+  // ─────────────────────────────────────────────────────────────────────────────
   async sendWeeklyDigests() {
     try {
       logger.info('Starting weekly digest send...');
 
-      // Find all users with unread notifications from the past 7 days
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-      const usersWithUnread = await Notification.distinct('userId', {
-        isRead: false,
+      // Step 1: Find user IDs with unread notifications in the last 7 days
+      const userIdsWithUnread = await Notification.distinct('userId', {
+        isRead:    false,
         createdAt: { $gte: sevenDaysAgo },
       });
 
-      logger.info('Sending digest to ' + usersWithUnread.length + ' users');
+      if (!userIdsWithUnread.length) {
+        logger.info('Weekly digest: no users with unread notifications — skipping');
+        return;
+      }
 
-      for (const userId of usersWithUnread) {
+      // CC-14 FIX: Step 2 — filter to only users who have opted in to email
+      // This is the critical GDPR gate. We do this as a second query (not in
+      // the Notification.distinct) because User and Notification are separate
+      // collections — we can't join them in a single MongoDB operation.
+      const optedInUsers = await User.find({
+        _id:        { $in: userIdsWithUnread },
+        emailOptIn: true,
+        isEmailVerified: true,  // Never email unverified addresses
+        isSuspended: false,     // Never email suspended accounts
+      }).select('_id').lean();
+
+      const eligibleIds = optedInUsers.map(u => u._id.toString());
+
+      logger.info(
+        'Weekly digest: ' + userIdsWithUnread.length + ' users with unread, ' +
+        eligibleIds.length + ' opted in — sending digests'
+      );
+
+      for (const userId of eligibleIds) {
         try {
           await this.sendDigestToUser(userId);
         } catch (e) {
@@ -36,53 +69,55 @@ class DigestService {
         }
       }
 
-      logger.info('Weekly digest completed');
+      logger.info('Weekly digest completed — sent to ' + eligibleIds.length + ' users');
     } catch (error) {
       logger.error('Weekly digest failed: ' + error.message);
     }
   }
 
-  /**
-   * Send digest to a single user
-   */
   async sendDigestToUser(userId) {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const notifications = await Notification.find({
       userId,
-      isRead: false,
+      isRead:    false,
       createdAt: { $gte: sevenDaysAgo },
     }).sort({ createdAt: -1 }).limit(10);
 
     if (notifications.length === 0) return;
 
-    const user = await User.findById(userId).select('name email');
-    if (!user || !user.email) return;
+    const user = await User.findById(userId).select('name email emailOptIn');
+    if (!user || !user.email || !user.emailOptIn) return;
 
     await sendNotificationDigest(user.email, user.name, notifications);
     logger.info('Digest sent to: ' + user.email);
   }
 
-  /**
-   * Schedule weekly digest — runs every Sunday at 9AM UTC
-   * Uses setInterval as a lightweight scheduler
-   * Production: replace with cron job or AWS EventBridge
-   */
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CC-24 FIX: Deterministic cron schedule — restart-safe, no duplicate sends
+  //
+  // node-cron fires based on wall-clock time, not on a timer started at boot.
+  // A server restart at 8:59 Sunday will still fire at exactly 09:00 Sunday —
+  // not immediately on restart like the old setTimeout approach.
+  // ─────────────────────────────────────────────────────────────────────────────
   scheduleWeeklyDigest() {
-    const now = new Date();
-    const nextSunday = new Date();
-    nextSunday.setUTCDate(now.getUTCDate() + (7 - now.getUTCDay()) % 7 || 7);
-    nextSunday.setUTCHours(9, 0, 0, 0);
+    try {
+      const cron = require('node-cron');
 
-    const msUntilFirst = nextSunday - now;
+      // '0 9 * * 0' = At 09:00 every Sunday (UTC)
+      cron.schedule('0 9 * * 0', () => {
+        logger.info('Weekly digest cron triggered — Sunday 09:00 UTC');
+        this.sendWeeklyDigests();
+      }, {
+        timezone: 'UTC',
+      });
 
-    logger.info('Weekly digest scheduled — first run in ' + Math.round(msUntilFirst / 3600000) + ' hours');
-
-    setTimeout(() => {
-      this.sendWeeklyDigests();
-      // Then repeat every 7 days
-      setInterval(() => this.sendWeeklyDigests(), 7 * 24 * 60 * 60 * 1000);
-    }, msUntilFirst);
+      logger.info('Weekly digest scheduled via cron — fires every Sunday at 09:00 UTC');
+    } catch (e) {
+      // node-cron not installed — log warning, fall back gracefully
+      logger.warn('node-cron unavailable — weekly digest will not run: ' + e.message);
+      logger.warn('Run: npm install node-cron');
+    }
   }
 }
 

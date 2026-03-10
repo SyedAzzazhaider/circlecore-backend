@@ -1,0 +1,87 @@
+name: CircleCore Backend CI
+
+# CC-15 FIX: GitHub Actions CI/CD pipeline
+# Previously no .github/ directory existed — every deployment was manual,
+# untested, and human-error-prone. Any commit to main that broke tests
+# could ship silently to production.
+#
+# This pipeline runs on every push and pull request:
+#   1. Installs dependencies
+#   2. Runs the full Jest test suite
+#   3. Reports pass/fail status on every PR
+#
+# Future additions (Phase 3):
+#   - Deployment job: SSH to EC2 → git pull → npm install → pm2 restart
+#   - Security scanning: npm audit --audit-level=high
+#   - Lint job: eslint src/
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+
+    # Provide test-only service containers
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run test suite
+        env:
+          NODE_ENV: test
+          # Test-only env vars — not real secrets
+          MONGODB_URI:          mongodb://localhost:27017/circlecore_test
+          REDIS_URL:            redis://localhost:6379
+          JWT_SECRET:           test_jwt_secret_32_chars_minimum_x
+          JWT_REFRESH_SECRET:   test_refresh_secret_32_chars_minimum
+          JWT_EXPIRES_IN:       15m
+          REFRESH_TOKEN_EXPIRES_IN: 7d
+          FRONTEND_URL:         http://localhost:3000
+          SENDGRID_API_KEY:     SG.test_key_not_real
+          SENDGRID_FROM_EMAIL:  test@circlecore.app
+          RECAPTCHA_ENABLED:    "false"
+          SESSION_TIMEOUT_MINUTES: "60"
+        run: npm test -- --forceExit --coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7

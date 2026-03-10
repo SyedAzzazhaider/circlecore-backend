@@ -3,75 +3,84 @@ const router = express.Router();
 const billingController = require('./billing.controller');
 const { authenticate } = require('../../middleware/authenticate');
 const { billingLimiter } = require('../../middleware/rateLimiter');
+const {
+  subscribeStripeValidator,
+  subscribeRazorpayValidator,
+  confirmRazorpayValidator,
+  changeTierValidator,
+  checkoutValidator,
+} = require('./billing.validators');
+const validate = require('../../middleware/validate');
 
 /**
- * Billing Routes
- * Document requirement: MODULE G — Tiered Membership & Billing
+ * Billing Routes — MODULE G
  *
- * Base path: /api/billing
+ * CC-02 FIX: Razorpay webhook now uses express.raw({ type: '*\/*' })
+ *   identical to Stripe, so req.body arrives as a Buffer.
+ *   The controller passes it directly to billingService — no re-serialization.
  *
- * WEBHOOK RAW BODY:
- * Stripe requires the raw request body (not parsed JSON) to verify webhook signatures.
- * We use express.raw({ type: '*\/*' }) directly on the Stripe webhook route.
- * This is reliable in all environments including Jest/supertest — unlike custom
- * stream listeners (req.on('data') / req.on('end')) which hang in test environments
- * because supertest delivers the body differently from real HTTP connections.
- * req.body will be a Buffer when express.raw() is used — the controller reads it directly.
+ * CC-06 FIX: billing.validators.js is now imported and applied to all
+ *   mutating billing routes. Previously these validators existed but were
+ *   never wired up, allowing malformed bodies to reach Stripe/Razorpay APIs.
  */
 
 // ─── Public Routes ────────────────────────────────────────────────────────────
-
-// GET /api/billing/plans — public, no auth required
 router.get('/plans', billingController.getPlans);
 
 // ─── Webhook Routes ───────────────────────────────────────────────────────────
-// No authenticate — webhooks are called by Stripe/Razorpay servers, not users.
-// Signature verification inside the controller replaces auth.
-
-// POST /api/billing/webhook/stripe
-// express.raw() delivers req.body as Buffer — required for Stripe HMAC verification.
+// Stripe: express.raw() required for HMAC verification
 router.post(
   '/webhook/stripe',
   express.raw({ type: '*/*' }),
   billingController.stripeWebhook
 );
 
-// POST /api/billing/webhook/razorpay
-router.post('/webhook/razorpay', billingController.razorpayWebhook);
+// CC-02 FIX: express.raw() added — req.body is now a Buffer, not parsed JSON
+router.post(
+  '/webhook/razorpay',
+  express.raw({ type: '*/*' }),
+  billingController.razorpayWebhook
+);
 
-// ─── Protected Routes (require authentication) ────────────────────────────────
+// ─── Protected Routes ─────────────────────────────────────────────────────────
+router.get('/subscription',  authenticate, billingController.getSubscription);
 
-// GET /api/billing/subscription
-router.get('/subscription', authenticate, billingController.getSubscription);
+// CC-06 FIX: validators applied
+router.post('/subscribe/stripe',
+  authenticate, billingLimiter,
+  subscribeStripeValidator, validate,
+  billingController.subscribeWithStripe
+);
 
-// POST /api/billing/subscribe/stripe
-router.post('/subscribe/stripe', authenticate, billingLimiter, billingController.subscribeWithStripe);
+router.post('/subscribe/razorpay',
+  authenticate, billingLimiter,
+  subscribeRazorpayValidator, validate,
+  billingController.subscribeWithRazorpay
+);
 
-// POST /api/billing/subscribe/razorpay
-router.post('/subscribe/razorpay', authenticate, billingLimiter, billingController.subscribeWithRazorpay);
+router.post('/subscribe/razorpay/confirm',
+  authenticate,
+  confirmRazorpayValidator, validate,
+  billingController.confirmRazorpayPayment
+);
 
-// POST /api/billing/subscribe/razorpay/confirm
-router.post('/subscribe/razorpay/confirm', authenticate, billingController.confirmRazorpayPayment);
+router.post('/checkout/stripe',
+  authenticate, billingLimiter,
+  checkoutValidator, validate,
+  billingController.createStripeCheckout
+);
 
-// POST /api/billing/checkout/stripe — Stripe Checkout hosted page
-router.post('/checkout/stripe', authenticate, billingLimiter, billingController.createStripeCheckout);
+router.get('/portal',    authenticate, billingController.getBillingPortal);
+router.post('/cancel',   authenticate, billingController.cancelSubscription);
 
-// GET /api/billing/portal — Stripe Billing Portal
-router.get('/portal', authenticate, billingController.getBillingPortal);
+router.put('/tier',
+  authenticate,
+  changeTierValidator, validate,
+  billingController.changeTier
+);
 
-// POST /api/billing/cancel
-router.post('/cancel', authenticate, billingController.cancelSubscription);
-
-// PUT /api/billing/tier
-router.put('/tier', authenticate, billingController.changeTier);
-
-// GET /api/billing/invoices
-router.get('/invoices', authenticate, billingController.getInvoices);
-
-// GET /api/billing/invoices/live
-router.get('/invoices/live', authenticate, billingController.getLiveInvoices);
-
-// GET /api/billing/invoices/:id
-router.get('/invoices/:id', authenticate, billingController.getInvoice);
+router.get('/invoices',       authenticate, billingController.getInvoices);
+router.get('/invoices/live',  authenticate, billingController.getLiveInvoices);
+router.get('/invoices/:id',   authenticate, billingController.getInvoice);
 
 module.exports = router;

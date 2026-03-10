@@ -1,22 +1,53 @@
-const User = require('../auth/auth.model');
-const Profile = require('./profile.model');
-const Post = require('../posts/post.model');
-const Comment = require('../comments/comment.model');
+const User         = require('../auth/auth.model');
+const Profile      = require('./profile.model');
+const Post         = require('../posts/post.model');
+const Comment      = require('../comments/comment.model');
 const Notification = require('../notifications/notification.model');
-const ApiResponse = require('../../utils/apiResponse');
-const logger = require('../../utils/logger');
+const ApiResponse  = require('../../utils/apiResponse');
+const logger       = require('../../utils/logger');
 
 /**
- * GDPR Controller
- * Document requirement: Security & Compliance — GDPR compliance
- * Right to data export + right to delete
+ * GDPR Controller — Security & Compliance
+ *
+ * CC-14 FIX: updateEmailPreferences() added.
+ *   Allows users to opt in or out of email digests at any time.
+ *   Required by GDPR Article 7 (right to withdraw consent), CAN-SPAM, and CASL.
  */
 class GdprController {
 
-  /**
-   * GDPR: Export all user data
-   * GET /api/gdpr/export
-   */
+  // ─── CC-14 FIX: Email consent management ─────────────────────────────────
+  // POST /api/gdpr/email-preferences
+  // Body: { emailOptIn: true | false }
+  //
+  // Returns the updated preference so the frontend can reflect the change
+  // immediately without a separate GET call.
+  async updateEmailPreferences(req, res, next) {
+    try {
+      const { emailOptIn } = req.body;
+
+      if (typeof emailOptIn !== 'boolean') {
+        return res.status(400).json({
+          success: false,
+          message: 'emailOptIn must be a boolean (true or false)',
+        });
+      }
+
+      await User.findByIdAndUpdate(req.user._id, { emailOptIn });
+
+      logger.info(
+        'Email preferences updated for user: ' + req.user._id +
+        ' — emailOptIn: ' + emailOptIn
+      );
+
+      return ApiResponse.success(res, { emailOptIn }, emailOptIn
+        ? 'You have opted in to email digests'
+        : 'You have opted out of email digests'
+      );
+    } catch (error) { next(error); }
+  }
+
+  // ─── GDPR: Export all user data ──────────────────────────────────────────
+  // GET /api/gdpr/export
   async exportData(req, res, next) {
     try {
       const userId = req.user._id;
@@ -31,27 +62,17 @@ class GdprController {
 
       const exportData = {
         exportedAt: new Date().toISOString(),
-        account: user,
-        profile: profile,
-        posts: {
-          total: posts.length,
-          data: posts,
-        },
-        comments: {
-          total: comments.length,
-          data: comments,
-        },
-        notifications: {
-          total: notifications.length,
-          data: notifications,
-        },
+        account:    user,
+        profile,
+        posts:         { total: posts.length,         data: posts         },
+        comments:      { total: comments.length,      data: comments      },
+        notifications: { total: notifications.length, data: notifications },
       };
 
       logger.info('GDPR data export for user: ' + userId);
 
       res.setHeader('Content-Type', 'application/json');
-      res.setHeader(
-        'Content-Disposition',
+      res.setHeader('Content-Disposition',
         'attachment; filename="circlecore-data-export-' + userId + '.json"'
       );
       res.send(JSON.stringify(exportData, null, 2));
@@ -59,10 +80,8 @@ class GdprController {
     } catch (error) { next(error); }
   }
 
-  /**
-   * GDPR: Right to delete — permanently delete all user data
-   * DELETE /api/gdpr/delete-account
-   */
+  // ─── GDPR: Right to delete ────────────────────────────────────────────────
+  // DELETE /api/gdpr/delete-account
   async deleteAccount(req, res, next) {
     try {
       const userId = req.user._id;
@@ -75,7 +94,6 @@ class GdprController {
         });
       }
 
-      // Verify password before deletion
       const user = await User.findById(userId).select('+password');
       const isValid = await user.comparePassword(confirmPassword);
       if (!isValid) {
@@ -85,19 +103,10 @@ class GdprController {
         });
       }
 
-      // Soft delete posts — mark inactive
       await Post.updateMany({ authorId: userId }, { isActive: false });
-
-      // Soft delete comments — mark inactive
       await Comment.updateMany({ authorId: userId }, { isActive: false });
-
-      // Delete notifications
       await Notification.deleteMany({ userId });
-
-      // Delete profile
       await Profile.findOneAndDelete({ userId });
-
-      // Hard delete user account
       await User.findByIdAndDelete(userId);
 
       logger.info('GDPR account deletion completed for user: ' + userId);
@@ -108,37 +117,34 @@ class GdprController {
     } catch (error) { next(error); }
   }
 
-  /**
-   * GDPR: Anonymize user data — alternative to full deletion
-   * POST /api/gdpr/anonymize
-   */
+  // ─── GDPR: Anonymize ──────────────────────────────────────────────────────
+  // POST /api/gdpr/anonymize
   async anonymizeAccount(req, res, next) {
     try {
       const userId = req.user._id;
 
-      const anonymousName = 'DeletedUser_' + userId.toString().slice(-6);
+      const anonymousName  = 'DeletedUser_' + userId.toString().slice(-6);
       const anonymousEmail = 'deleted_' + userId.toString() + '@anonymized.circlecore.app';
 
-      // Anonymize user account
       await User.findByIdAndUpdate(userId, {
-        name: anonymousName,
-        email: anonymousEmail,
+        name:            anonymousName,
+        email:           anonymousEmail,
         isEmailVerified: false,
-        isSuspended: true,
-        refreshTokens: [],
-        oauthId: null,
+        isSuspended:     true,
+        emailOptIn:      false,
+        refreshTokens:   [],
+        oauthId:         null,
       });
 
-      // Anonymize profile
       await Profile.findOneAndUpdate({ userId }, {
-        avatar: null,
-        bio: '',
-        location: '',
-        website: '',
-        skills: [],
-        interests: [],
+        avatar:      null,
+        bio:         '',
+        location:    '',
+        website:     '',
+        skills:      [],
+        interests:   [],
         socialLinks: { twitter: '', linkedin: '', github: '' },
-        isPublic: false,
+        isPublic:    false,
       });
 
       logger.info('GDPR anonymization completed for user: ' + userId);

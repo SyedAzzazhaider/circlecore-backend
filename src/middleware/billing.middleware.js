@@ -1,26 +1,18 @@
 const Subscription = require('../modules/billing/subscription.model');
 const ApiResponse = require('../utils/apiResponse');
 const logger = require('../utils/logger');
+const { TIER_LEVELS } = require('../constants/tiers');
 
 /**
  * Billing Middleware
- * Document requirement: MODULE G — Tiered Membership
- * Feature gating based on subscription tier
- * Apply to routes that require Premium or Enterprise tier
+ * CC-01 + CC-23 FIX: TIER_LEVELS imported from canonical src/constants/tiers.js
+ * Previously defined inline — now single source of truth.
  */
 
-/**
- * Require a minimum subscription tier to access a route
- * Usage: router.get('/premium-feature', authenticate, requireTier('premium'), handler)
- */
 const requireTier = (minimumTier) => {
-  const TIER_LEVELS = { free: 0, premium: 1, enterprise: 2 };
-
   return async (req, res, next) => {
     try {
-      if (!req.user) {
-        return ApiResponse.unauthorized(res, 'Authentication required');
-      }
+      if (!req.user) return ApiResponse.unauthorized(res, 'Authentication required');
 
       const subscription = await Subscription.findOne({
         userId: req.user._id,
@@ -41,10 +33,8 @@ const requireTier = (minimumTier) => {
         });
       }
 
-      // Attach subscription to request for downstream use
       req.subscription = subscription;
       req.userTier = userTier;
-
       next();
     } catch (error) {
       logger.error('Tier check failed: ' + error.message);
@@ -53,40 +43,24 @@ const requireTier = (minimumTier) => {
   };
 };
 
-/**
- * Attach subscription info to request without blocking
- * Useful for endpoints that behave differently based on tier
- * Usage: router.get('/feed', authenticate, attachSubscription, handler)
- */
 const attachSubscription = async (req, res, next) => {
   try {
     if (!req.user) return next();
-
     const subscription = await Subscription.findOne({ userId: req.user._id });
     req.subscription = subscription;
     req.userTier = subscription?.tier || 'free';
     next();
   } catch (error) {
-    // Non-blocking — don't fail the request if subscription lookup fails
     req.userTier = 'free';
     next();
   }
 };
 
-/**
- * Check if subscription is active (not past_due or cancelled)
- * Use on billing-sensitive routes
- */
 const requireActiveSubscription = async (req, res, next) => {
   try {
     if (!req.user) return ApiResponse.unauthorized(res, 'Authentication required');
-
     const subscription = await Subscription.findOne({ userId: req.user._id });
-
-    if (!subscription || subscription.tier === 'free') {
-      return next(); // Free tier is always "active"
-    }
-
+    if (!subscription || subscription.tier === 'free') return next();
     if (!['active', 'trialing'].includes(subscription.status)) {
       return res.status(402).json({
         success: false,
@@ -95,7 +69,6 @@ const requireActiveSubscription = async (req, res, next) => {
         paymentRequired: true,
       });
     }
-
     req.subscription = subscription;
     next();
   } catch (error) {

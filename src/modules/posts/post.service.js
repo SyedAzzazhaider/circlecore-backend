@@ -15,7 +15,6 @@ class PostService {
       throw Object.assign(new Error('You must be a member to post in this community'), { statusCode: 403 });
     }
 
-    // FIX: community ban enforcement — document requirement: MODULE H blocklists
     const isBanned = await Blocklist.findOne({
       type: 'community_ban',
       blockedUserId: authorId,
@@ -27,7 +26,6 @@ class PostService {
       throw Object.assign(new Error('You are banned from posting in this community'), { statusCode: 403 });
     }
 
-    // Document requirement: validate poll options if type is poll
     if (type === 'poll') {
       if (!poll || !poll.options || poll.options.length < 2) {
         throw Object.assign(new Error('Poll must have at least 2 options'), { statusCode: 400 });
@@ -37,7 +35,6 @@ class PostService {
       }
     }
 
-    // Document requirement: validate resource URL if type is resource
     if (type === 'resource') {
       if (!resource || !resource.url) {
         throw Object.assign(new Error('Resource posts must include a URL'), { statusCode: 400 });
@@ -54,7 +51,6 @@ class PostService {
       channelId: channelId || null,
     };
 
-    // Document requirement: media with metadata structure (S3-ready)
     if (mediaURLs && mediaURLs.length > 0) {
       postData.mediaURLs = mediaURLs.map(m => {
         if (typeof m === 'string') {
@@ -64,7 +60,6 @@ class PostService {
       });
     }
 
-    // Document requirement: resource fields
     if (type === 'resource' && resource) {
       postData.resource = {
         url: resource.url,
@@ -74,7 +69,6 @@ class PostService {
       };
     }
 
-    // Document requirement: poll with structured options
     if (type === 'poll' && poll) {
       postData.poll = {
         question: poll.question || content,
@@ -92,10 +86,8 @@ class PostService {
 
     const post = await Post.create(postData);
 
-    // Invalidate feed cache
     await cache.deletePattern('feed:' + communityId + ':*');
 
-    // Emit real-time event to community room
     try {
       emitToCommunity(communityId, 'post:new', {
         postId: post._id,
@@ -109,7 +101,6 @@ class PostService {
       logger.warn('Socket emit failed: ' + e.message);
     }
 
-    // Document requirement: mention detection in posts
     try {
       await this.detectAndNotifyMentions(content, authorId, post._id, 'post');
     } catch (e) {
@@ -118,6 +109,66 @@ class PostService {
 
     logger.info('Post created: ' + post._id);
     return post;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CC-07 FIX: Unified Home Feed — GET /api/posts/feed
+  //
+  // Previously missing entirely. This is the primary home feed of the platform —
+  // aggregates posts from ALL communities the authenticated user has joined,
+  // sorted newest-first with pagination support.
+  //
+  // Query strategy:
+  //   1. Find all Community documents where members array contains userId
+  //   2. Extract their _ids
+  //   3. Query Posts where communityId is in that set
+  //   4. Populate author + community for frontend rendering
+  //
+  // No profile.joinedCommunities needed — Community.members is the source of truth.
+  // ─────────────────────────────────────────────────────────────────────────────
+  async getUserFeed(userId, { page = 1, limit = 10 }) {
+    const pageNum  = parseInt(page)  || 1;
+    const limitNum = parseInt(limit) || 10;
+    const skip = (pageNum - 1) * limitNum;
+
+    // Step 1: Find every community this user is a member of
+    const communities = await Community.find(
+      { 'members.userId': userId, isActive: true },
+      { _id: 1 }
+    ).lean();
+
+    if (!communities.length) {
+      return {
+        posts: [],
+        pagination: { total: 0, page: pageNum, limit: limitNum, pages: 0 },
+        message: 'Join communities to see posts in your feed',
+      };
+    }
+
+    const communityIds = communities.map(c => c._id);
+
+    // Step 2: Fetch posts from those communities
+    const query = { communityId: { $in: communityIds }, isActive: true };
+
+    const [total, posts] = await Promise.all([
+      Post.countDocuments(query),
+      Post.find(query)
+        .populate('authorId',    'name email profileId')
+        .populate('communityId', 'name slug')
+        .sort({ isPinned: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+    ]);
+
+    return {
+      posts,
+      pagination: {
+        total,
+        page:  pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum),
+      },
+    };
   }
 
   async getCommunityFeed(communityId, { page = 1, limit = 10, type }) {
@@ -147,7 +198,7 @@ class PostService {
       posts,
       pagination: {
         total,
-        page: parseInt(page),
+        page:  parseInt(page),
         limit: parseInt(limit),
         pages: Math.ceil(total / limit),
       },
@@ -169,7 +220,7 @@ class PostService {
     }
 
     const post = await Post.findById(postId)
-      .populate('authorId', 'name email profileId')
+      .populate('authorId',    'name email profileId')
       .populate('communityId', 'name slug');
 
     if (!post || !post.isActive) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
@@ -205,9 +256,9 @@ class PostService {
     if (!post || !post.isActive) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
 
     const isAuthor = post.authorId.toString() === userId.toString();
-    const isAdmin = ['admin', 'super_admin', 'moderator'].includes(userRole);
+    const isModerator = ['admin', 'super_admin', 'moderator'].includes(userRole);
 
-    if (!isAuthor && !isAdmin) {
+    if (!isAuthor && !isModerator) {
       throw Object.assign(new Error('You do not have permission to delete this post'), { statusCode: 403 });
     }
 
@@ -223,7 +274,30 @@ class PostService {
       logger.warn('Socket emit failed: ' + e.message);
     }
 
-    logger.info('Post deleted: ' + postId);
+    // CC-09 FIX: moderator_action notification on moderator-initiated delete
+    // Only fire when a moderator/admin removes ANOTHER user's content.
+    // Never fire when the author deletes their own post.
+    if (isModerator && !isAuthor) {
+      try {
+        const NotificationService = require('../notifications/notification.service');
+        await NotificationService.createNotification({
+          userId: post.authorId,
+          type:    'moderator_action',
+          title:   'Your post was removed',
+          message: 'A moderator removed your post: "' + (post.title || post.content.slice(0, 60)) + '"',
+          meta: {
+            postId:      post._id,
+            fromUserId:  userId,
+            communityId: post.communityId,
+            action:      'remove',
+          },
+        });
+      } catch (e) {
+        logger.warn('moderator_action (delete) notification failed: ' + e.message);
+      }
+    }
+
+    logger.info('Post deleted: ' + postId + ' by user: ' + userId + ' (role: ' + userRole + ')');
     return { message: 'Post deleted successfully' };
   }
 
@@ -248,7 +322,6 @@ class PostService {
 
     await cache.delete(cache.keys.post(postId));
 
-    // Document requirement: update author reputation on post reaction
     try {
       const reputationService = require('../users/reputation.service');
       await reputationService.updatePostReactionReputation(post.authorId, isAdding);
@@ -286,25 +359,50 @@ class PostService {
 
   async pinPost(postId, userId, communityId) {
     const community = await Community.findById(communityId);
+    if (!community) throw Object.assign(new Error('Community not found'), { statusCode: 404 });
+
     const memberRole = community.getMemberRole(userId);
     if (!['admin', 'moderator'].includes(memberRole)) {
       throw Object.assign(new Error('Only admins and moderators can pin posts'), { statusCode: 403 });
     }
 
-    // FIX: replaced deprecated { new: true } with { returnDocument: 'after' }
     const post = await Post.findByIdAndUpdate(
       postId,
       [{ $set: { isPinned: { $not: '$isPinned' } } }],
       { returnDocument: 'after' }
     );
 
+    if (!post) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
+
     await cache.deletePattern('feed:' + communityId + ':*');
+
+    // CC-09 FIX: moderator_action notification — post authors receive zero
+    // feedback when their content is pinned/unpinned. Now they are notified.
+    // Only notify when pinning, not unpinning (to avoid notification spam).
+    if (post.isPinned && post.authorId.toString() !== userId.toString()) {
+      try {
+        const NotificationService = require('../notifications/notification.service');
+        await NotificationService.createNotification({
+          userId:  post.authorId,
+          type:    'moderator_action',
+          title:   'Your post was pinned',
+          message: 'A moderator pinned your post: "' + (post.title || post.content.slice(0, 60)) + '"',
+          meta: {
+            postId:      post._id,
+            fromUserId:  userId,
+            communityId: communityId,
+            action:      'pin',
+          },
+        });
+      } catch (e) {
+        logger.warn('moderator_action (pin) notification failed: ' + e.message);
+      }
+    }
+
+    logger.info('Post ' + (post.isPinned ? 'pinned' : 'unpinned') + ': ' + postId);
     return post;
   }
 
-  /**
-   * Document requirement: Poll voting
-   */
   async votePoll(postId, userId, optionId) {
     const post = await Post.findById(postId);
     if (!post || !post.isActive) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
@@ -324,7 +422,7 @@ class PostService {
 
     if (!post.poll.allowMultiple) {
       post.poll.options.forEach(opt => {
-        opt.votes = opt.votes.filter(v => v.toString() !== userId.toString());
+        opt.votes     = opt.votes.filter(v => v.toString() !== userId.toString());
         opt.voteCount = opt.votes.length;
       });
     }
@@ -335,29 +433,26 @@ class PostService {
       option.votes.push(userId);
     }
 
-    option.voteCount = option.votes.length;
-    post.poll.totalVotes = post.poll.options.reduce((sum, opt) => sum + opt.voteCount, 0);
+    option.voteCount          = option.votes.length;
+    post.poll.totalVotes      = post.poll.options.reduce((sum, opt) => sum + opt.voteCount, 0);
 
     await post.save();
     await cache.delete(cache.keys.post(postId));
 
     return {
       pollResults: post.poll.options.map(opt => ({
-        optionId: opt._id,
-        text: opt.text,
-        voteCount: opt.voteCount,
+        optionId:   opt._id,
+        text:       opt.text,
+        voteCount:  opt.voteCount,
         percentage: post.poll.totalVotes > 0
           ? Math.round((opt.voteCount / post.poll.totalVotes) * 100)
           : 0,
       })),
       totalVotes: post.poll.totalVotes,
-      userVoted: optionId,
+      userVoted:  optionId,
     };
   }
 
-  /**
-   * Document requirement: Hashtag search
-   */
   async getPostsByTag(tag, { page = 1, limit = 10 }) {
     const skip = (page - 1) * limit;
     const cleanTag = tag.replace(/^#/, '').toLowerCase();
@@ -365,27 +460,24 @@ class PostService {
     const total = await Post.countDocuments({ tags: cleanTag, isActive: true });
 
     const posts = await Post.find({ tags: cleanTag, isActive: true })
-      .populate('authorId', 'name email profileId')
+      .populate('authorId',    'name email profileId')
       .populate('communityId', 'name slug')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     return {
-      tag: cleanTag,
+      tag,
       posts,
       pagination: {
         total,
-        page: parseInt(page),
+        page:  parseInt(page),
         limit: parseInt(limit),
         pages: Math.ceil(total / limit),
       },
     };
   }
 
-  /**
-   * Document requirement: Mention notifications
-   */
   async detectAndNotifyMentions(content, authorId, sourceId, sourceType) {
     if (!content) return;
 
@@ -401,21 +493,21 @@ class PostService {
     for (const username of usernames) {
       try {
         const mentionedUser = await User.findOne({
-          name: { $regex: new RegExp('^' + username + '$', 'i') },
+          name: { $regex: new RegExp('^' + username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') },
         });
 
         if (!mentionedUser) continue;
         if (mentionedUser._id.toString() === authorId.toString()) continue;
 
         await NotificationService.createNotification({
-          userId: mentionedUser._id,
-          type: 'mention',
-          title: 'You were mentioned',
+          userId:  mentionedUser._id,
+          type:    'mention',
+          title:   'You were mentioned',
           message: 'Someone mentioned you in a ' + sourceType,
           meta: {
             fromUserId: authorId,
-            postId: sourceType === 'post' ? sourceId : null,
-            commentId: sourceType === 'comment' ? sourceId : null,
+            postId:     sourceType === 'post'    ? sourceId : null,
+            commentId:  sourceType === 'comment' ? sourceId : null,
           },
         });
       } catch (e) {
