@@ -123,6 +123,13 @@ class S3Service {
     await this.client.send(command);
     logger.info(`S3 delete success: ${key}`);
   }
+    getFileUrl(key) {
+    if (!key) return null;
+    const cdn = process.env.CLOUDFRONT_URL;
+    if (cdn) return `${cdn.replace(/\/$/, '')}/${key}`;
+    return `https://${this.bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+  }
+  
 
   isImageType(mimetype)  { return ALLOWED_IMAGE_TYPES.includes(mimetype); }
   getSizeLimit(folder)   { return SIZE_LIMITS[folder] || SIZE_LIMITS.post; }

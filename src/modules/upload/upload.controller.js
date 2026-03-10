@@ -10,8 +10,14 @@ const logger = require('../../utils/logger');
  *   POST /api/upload           → general file/image upload (for posts)
  *   POST /api/upload/avatar    → profile avatar upload
  *   POST /api/upload/cover     → community or event cover image
- *   GET  /api/upload/url/:key  → get presigned URL for a private file
- *   DELETE /api/upload/:key    → delete a file (admin/owner only)
+ *   GET  /api/upload/url/:key  → get fresh presigned URL for a private file
+ *   DELETE /api/upload         → delete a file (owner only)
+ *
+ * CDN FIX: uploadFile() now returns a permanent URL via s3Service.getFileUrl().
+ *   getFileUrl() uses CLOUDFRONT_URL if set, otherwise falls back to direct S3 URL.
+ *   Previously avatar and cover used presigned URLs which expire after 1 hour —
+ *   breaking any profile image or community cover after that window.
+ *   Posts had no URL at all — only a key was returned.
  */
 
 class UploadController {
@@ -37,9 +43,10 @@ class UploadController {
 
       return ApiResponse.created(res, {
         upload: {
-          key: result.key,
-          size: result.size,
-          mimetype: result.mimetype,
+          key:          result.key,
+          url:          s3Service.getFileUrl(result.key),
+          size:         result.size,
+          mimetype:     result.mimetype,
           originalname: result.originalname,
         }
       }, 'File uploaded successfully');
@@ -59,7 +66,7 @@ class UploadController {
         return ApiResponse.badRequest(res, 'No image provided');
       }
 
-      // Delete old avatar from S3 if exists
+      // Delete old avatar from S3 if it exists
       const Profile = require('../users/profile.model');
       const profile = await Profile.findOne({ userId: req.user._id });
       if (profile?.avatarKey) {
@@ -77,23 +84,24 @@ class UploadController {
         'avatars'
       );
 
-      // Update profile with new avatar key
+      // CDN FIX: permanent URL — presigned URLs expire after 1 hour and
+      // break the profile image for any user who does not refresh the page.
+      const url = s3Service.getFileUrl(result.key);
+
+      // Persist both the key (for future deletion) and the resolved URL
       await Profile.findOneAndUpdate(
         { userId: req.user._id },
-        { avatarKey: result.key },
+        { avatarKey: result.key, avatar: url },
         { returnDocument: 'after' }
       );
-
-      // Generate presigned URL for immediate use
-      const url = await s3Service.getPresignedUrl(result.key, 3600);
 
       logger.info(`Avatar uploaded by user ${req.user._id}: ${result.key}`);
 
       return ApiResponse.success(res, {
         upload: {
-          key: result.key,
+          key:      result.key,
           url,
-          size: result.size,
+          size:     result.size,
           mimetype: result.mimetype,
         }
       }, 'Avatar uploaded successfully');
@@ -122,16 +130,17 @@ class UploadController {
         folder
       );
 
-      // Generate presigned URL for immediate use
-      const url = await s3Service.getPresignedUrl(result.key, 3600);
+      // CDN FIX: permanent URL — presigned URLs expire after 1 hour and
+      // break community/event covers for users who do not refresh.
+      const url = s3Service.getFileUrl(result.key);
 
       logger.info(`Cover uploaded by user ${req.user._id}: ${result.key}`);
 
       return ApiResponse.created(res, {
         upload: {
-          key: result.key,
+          key:      result.key,
           url,
-          size: result.size,
+          size:     result.size,
           mimetype: result.mimetype,
         }
       }, 'Cover image uploaded successfully');
@@ -143,8 +152,8 @@ class UploadController {
 
   /**
    * GET /api/upload/url/:key
-   * Generate a fresh presigned URL for accessing a private file
-   * Frontend calls this when a presigned URL has expired
+   * Generate a fresh presigned URL for accessing a private file.
+   * Frontend calls this when a presigned URL has expired (private documents only).
    */
   async getPresignedUrl(req, res, next) {
     try {
@@ -154,7 +163,6 @@ class UploadController {
         return ApiResponse.badRequest(res, 'File key is required');
       }
 
-      // Decode URI component in case key has encoded slashes
       const decodedKey = decodeURIComponent(key);
       const url = await s3Service.getPresignedUrl(decodedKey, 3600);
 
@@ -167,8 +175,7 @@ class UploadController {
 
   /**
    * DELETE /api/upload
-   * Delete a file from S3
-   * Only the file owner or admin can delete
+   * Delete a file from S3 — owner only
    */
   async deleteFile(req, res, next) {
     try {
