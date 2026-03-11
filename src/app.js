@@ -11,8 +11,6 @@ const errorHandler          = require('./middleware/errorHandler');
 const logger                = require('./utils/logger');
 const { authenticate }      = require('./middleware/authenticate');
 const { checkSessionTimeout } = require('./middleware/sessionTimeout');
-const mongoSanitize         = require('express-mongo-sanitize');
-
 // ─── CC-13 FIX: Sentry — initialize BEFORE all routes ────────────────────────
 // Must be the very first thing after requires. Sentry instruments Express
 // automatically when initialized here — captures all unhandled exceptions.
@@ -138,7 +136,24 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // ─── CC-31: NoSQL injection protection (from Step 1) ─────────────────────────
-app.use(mongoSanitize());
+// NoSQL injection protection — sanitize req.body and req.params only
+// express-mongo-sanitize v2.2.0 is incompatible with Express v5 (modifies read-only req.query)
+app.use((req, res, next) => {
+  const sanitize = (obj) => {
+    if (obj && typeof obj === 'object') {
+      Object.keys(obj).forEach(key => {
+        if (key.startsWith('$') || key.includes('.')) {
+          delete obj[key];
+        } else if (typeof obj[key] === 'object') {
+          sanitize(obj[key]);
+        }
+      });
+    }
+  };
+  sanitize(req.body);
+  sanitize(req.params);
+  next();
+});
 // ─── PASSPORT (OAuth) ─────────────────────────────────────────────────────────
 app.use(passport.initialize());
 
