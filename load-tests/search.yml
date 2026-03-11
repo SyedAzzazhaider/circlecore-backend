@@ -1,0 +1,25 @@
+config:
+  target: "http://localhost:5000"
+  phases:
+    - duration: 60
+      arrivalRate: 5
+      name: "Warm up"
+    - duration: 120
+      arrivalRate: 25
+      name: "Sustained load"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{ $processEnvironment.LOAD_TEST_TOKEN }}"
+
+scenarios:
+  - name: "Search queries"
+    flow:
+      - get:
+          url: "/api/search?q=community&type=all"
+      - think: 1
+      - get:
+          url: "/api/search?q=event&type=events"
+      - think: 1
+      - get:
+          url: "/api/search?q=developer&type=users"

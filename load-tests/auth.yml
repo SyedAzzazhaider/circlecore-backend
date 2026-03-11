@@ -1,0 +1,32 @@
+config:
+  target: "http://localhost:5000"
+  phases:
+    - duration: 60
+      arrivalRate: 5
+      name: "Warm up"
+    - duration: 120
+      arrivalRate: 20
+      name: "Sustained load"
+    - duration: 60
+      arrivalRate: 50
+      name: "Peak load"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+
+scenarios:
+  - name: "Register and Login flow"
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "loadtest@circlecore.com"
+            password: "LoadTest@123456"
+          capture:
+            - json: "$.data.accessToken"
+              as: "accessToken"
+      - think: 1
+      - get:
+          url: "/api/auth/me"
+          headers:
+            Authorization: "Bearer {{ accessToken }}"

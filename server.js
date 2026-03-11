@@ -112,6 +112,10 @@ const startServer = async () => {
     const digestService = require('./src/modules/notifications/digest.service');
     digestService.scheduleWeeklyDigest();
 
+    // Document requirement: Architecture Overview — Daily Automated Backups
+    const backupJob = require('./src/jobs/backup.job');
+    backupJob.schedule();
+
     // Document requirement: MODULE H — Auto-lift expired temporary suspensions
     // Uses node-cron: every hour at :00
     try {
