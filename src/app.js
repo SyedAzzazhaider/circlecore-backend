@@ -138,8 +138,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // ─── CC-31: NoSQL injection protection (from Step 1) ─────────────────────────
-app.use(mongoSanitize({ replaceWith: '_' }));
-
+app.use(mongoSanitize());
 // ─── PASSPORT (OAuth) ─────────────────────────────────────────────────────────
 app.use(passport.initialize());
 
